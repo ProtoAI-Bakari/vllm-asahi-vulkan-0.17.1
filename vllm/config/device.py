@@ -52,6 +52,9 @@ class DeviceConfig:
             from vllm.platforms import current_platform
 
             self.device_type = current_platform.device_type
+            # 🔥 ASAHI STEALTH FALLBACK 🔥
+            if not self.device_type and os.environ.get("VLLM_PLATFORM") == "vulkan":
+                self.device_type = "cpu"
             if not self.device_type:
                 raise RuntimeError(
                     "Failed to infer device type, please set "

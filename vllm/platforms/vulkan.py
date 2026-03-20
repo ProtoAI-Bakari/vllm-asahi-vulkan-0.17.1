@@ -42,6 +42,11 @@ torch.cuda.current_stream = torch.cuda.default_stream = lambda *a, **k: DStream(
 
 # --- 4. Platform Definition (Stealth CPU Mode) ---
 class VulkanPlatform(Platform):
+    def __init__(self):
+        self.device_name = "cpu"
+        self.device_type = "cpu"
+        self.dispatch_key = "Vulkan"
+
     _enum = PlatformEnum.VULKAN
     device_name: str = "vulkan"
     device_type: str = "cpu"  # THE BYPASS: Force vLLM to treat us as CPU for config
