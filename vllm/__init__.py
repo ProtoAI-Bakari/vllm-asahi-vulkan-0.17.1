@@ -1,3 +1,8 @@
+import os, logging
+os.environ["VLLM_PLATFORM"] = "vulkan"
+logging.basicConfig(level=logging.INFO)
+logging.getLogger(__name__).info("🔥 HACKED: Forcing VulkanPlatform for Asahi Linux! 🔥")
+
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """vLLM: a high-throughput and memory-efficient inference engine for LLMs"""
