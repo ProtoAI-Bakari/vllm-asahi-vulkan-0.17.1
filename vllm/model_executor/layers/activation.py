@@ -144,8 +144,12 @@ class SiluAndMul(CustomOp):
         d = x.shape[-1] // 2
         output_shape = x.shape[:-1] + (d,)
         out = torch.empty(output_shape, dtype=x.dtype, device=x.device)
-        self.op(out, x)
-        return out
+        if hasattr(self, "op") and self.op is not None:
+            try:
+                self.op(out, x)
+                return out
+            except Exception: pass
+        return torch.nn.functional.silu(x[..., :d]) * x[..., d:]
 
     def forward_xpu(self, x: torch.Tensor) -> torch.Tensor:
         return self.forward_cuda(x)

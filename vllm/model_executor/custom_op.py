@@ -126,7 +126,10 @@ class CustomOp(nn.Module):
         self._forward_method = self.dispatch_forward(compile_native=compile_native)
 
     def forward(self, *args, **kwargs):
-        return self._forward_method(*args, **kwargs)
+        try:
+            return self._forward_method(*args, **kwargs)
+        except AttributeError:
+            return self.forward_native(*args, **kwargs)
 
     def forward_native(self, *args, **kwargs):
         """PyTorch-native implementation of the forward method.

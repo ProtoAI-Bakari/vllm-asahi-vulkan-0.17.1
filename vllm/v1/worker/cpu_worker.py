@@ -116,7 +116,7 @@ class CPUWorker(Worker):
         pass
 
     def determine_available_memory(self) -> int:
-        return self.cache_config.cpu_kvcache_space_bytes or 0
+        return 4 * 1024**3
 
     def compile_or_warm_up_model(self) -> float:
         # Reset the seed to ensure that the random state is not affected by

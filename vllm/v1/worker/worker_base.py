@@ -248,6 +248,9 @@ class WorkerWrapperBase:
         load_general_plugins()
 
         parallel_config = vllm_config.parallel_config
+        # 🔥 THE ASAHI INTERCEPTOR 🔥
+        if parallel_config.worker_cls == 'auto':
+            parallel_config.worker_cls = 'vllm.v1.worker.cpu_worker.CPUWorker'
         if isinstance(parallel_config.worker_cls, str):
             worker_class: type[WorkerBase] = resolve_obj_by_qualname(
                 parallel_config.worker_cls

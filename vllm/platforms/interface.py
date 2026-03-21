@@ -42,6 +42,7 @@ class PlatformEnum(enum.Enum):
     XPU = enum.auto()
     CPU = enum.auto()
     OOT = enum.auto()
+    VULKAN = enum.auto()
     UNSPECIFIED = enum.auto()
 
 
