@@ -174,7 +174,13 @@ def cpu_platform_plugin() -> str | None:
     return "vllm.platforms.cpu.CpuPlatform" if is_cpu else None
 
 
+
+def vulkan_platform_plugin() -> str | None:
+    if os.environ.get('VLLM_PLATFORM') == 'vulkan':
+        return 'vllm.platforms.vulkan.VulkanPlatform'
+    return None
 builtin_platform_plugins = {
+    'vulkan': vulkan_platform_plugin,
     "tpu": tpu_platform_plugin,
     "cuda": cuda_platform_plugin,
     "rocm": rocm_platform_plugin,
@@ -184,6 +190,9 @@ builtin_platform_plugins = {
 
 
 def resolve_current_platform_cls_qualname() -> str:
+    if os.environ.get("VLLM_PLATFORM") == "vulkan":
+        return "vllm.platforms.vulkan.VulkanPlatform"
+
     platform_plugins = load_plugins_by_group(PLATFORM_PLUGINS_GROUP)
 
     activated_plugins = []
