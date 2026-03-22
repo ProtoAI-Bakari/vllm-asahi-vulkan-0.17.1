@@ -1,3 +1,4 @@
+import os
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
@@ -231,7 +232,8 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
         # Initiate the copy on a separate stream, but do not synchronize it.
         default_stream = torch.cuda.current_stream()
         with torch.cuda.stream(async_output_copy_stream):
-            async_output_copy_stream.wait_stream(default_stream)
+            if os.environ.get('VLLM_PLATFORM') != 'vulkan':
+                async_output_copy_stream.wait_stream(default_stream)
             self.sampled_token_ids_cpu = self._sampled_token_ids.to(
                 "cpu", non_blocking=True
             )
@@ -240,7 +242,8 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
                 if self._logprobs_tensors
                 else None
             )
-            self.async_copy_ready_event.record()
+            if os.environ.get('VLLM_PLATFORM') != 'vulkan':
+                self.async_copy_ready_event.record()
 
     def get_output(self) -> ModelRunnerOutput:
         """Copy the device tensors to the host and return a ModelRunnerOutput.
@@ -339,12 +342,14 @@ class AsyncGPUPoolingModelRunnerOutput(AsyncModelRunnerOutput):
         # Initiate the copy on a separate stream, but do not synchronize it.
         default_stream = torch.cuda.current_stream()
         with torch.cuda.stream(async_output_copy_stream):
-            async_output_copy_stream.wait_stream(default_stream)
+            if os.environ.get('VLLM_PLATFORM') != 'vulkan':
+                async_output_copy_stream.wait_stream(default_stream)
             self._model_runner_output.pooler_output = _copy_pooler_output_to_cpu(
                 raw_pooler_output=self._raw_pooler_output,
                 finished_mask=finished_mask,
             )
-            self.async_copy_ready_event.record()
+            if os.environ.get('VLLM_PLATFORM') != 'vulkan':
+                self.async_copy_ready_event.record()
 
     def get_output(self) -> ModelRunnerOutput:
         """Copy the device tensors to the host and return a ModelRunnerOutput.
@@ -3123,7 +3128,8 @@ class GPUModelRunner(
         try:
             yield
         finally:
-            self.prepare_inputs_event.record()
+            if os.environ.get('VLLM_PLATFORM') != 'vulkan':
+                self.prepare_inputs_event.record()
 
     def _model_forward(
         self,
@@ -3996,14 +4002,16 @@ class GPUModelRunner(
         with torch.cuda.stream(self.draft_token_ids_copy_stream):
             if not zeros_only:
                 # Trigger async copy of draft token ids to cpu.
-                self.draft_token_ids_copy_stream.wait_stream(default_stream)
+                if os.environ.get('VLLM_PLATFORM') != 'vulkan':
+                    self.draft_token_ids_copy_stream.wait_stream(default_stream)
                 self.draft_token_ids_cpu[:num_reqs].copy_(
                     draft_token_ids, non_blocking=True
                 )
             else:
                 # No copy needed, just zero-out cpu tensor.
                 self.draft_token_ids_cpu[:num_reqs] = 0
-            self.draft_token_ids_event.record()
+            if os.environ.get('VLLM_PLATFORM') != 'vulkan':
+                self.draft_token_ids_event.record()
 
     def _get_draft_token_ids_cpu(self) -> tuple[list[list[int]], list[str]]:
         if isinstance(self._draft_token_ids, list):
@@ -4026,12 +4034,14 @@ class GPUModelRunner(
         # Initialize a new stream to overlap the copy operation with
         # prepare_input of draft model.
         with torch.cuda.stream(self.valid_sampled_token_count_copy_stream):
-            self.valid_sampled_token_count_copy_stream.wait_stream(default_stream)  # type: ignore
+            if os.environ.get('VLLM_PLATFORM') != 'vulkan':
+                self.valid_sampled_token_count_copy_stream.wait_stream(default_stream)  # type: ignore
             counts = valid_sampled_tokens_count
             counts_cpu = self.valid_sampled_token_count_cpu
             assert counts_cpu is not None
             counts_cpu[: counts.shape[0]].copy_(counts, non_blocking=True)
-            self.valid_sampled_token_count_event.record()
+            if os.environ.get('VLLM_PLATFORM') != 'vulkan':
+                self.valid_sampled_token_count_event.record()
 
         self.input_batch.prev_sampled_token_ids = next_token_ids.unsqueeze(1)
 
@@ -6228,7 +6238,8 @@ class GPUModelRunner(
         # setup.
         pinned = self.sampled_token_ids_pinned_cpu[: sampled_token_ids.shape[0]]
         pinned.copy_(sampled_token_ids, non_blocking=True)
-        self.transfer_event.record()
+        if os.environ.get('VLLM_PLATFORM') != 'vulkan':
+            self.transfer_event.record()
         self.transfer_event.synchronize()
         return pinned.tolist()
 
