@@ -55,7 +55,14 @@ struct Counter {
 
 inline int64_t get_available_l2_size() {
   static int64_t size = []() {
+    // Pristine Version-Aware Hardware Detection
+    #if TORCH_VERSION_MAJOR >= 2 && TORCH_VERSION_MINOR >= 11
+    #include <unistd.h>
+    long cache_res = sysconf(_SC_LEVEL2_CACHE_SIZE);
+    const uint32_t l2_cache_size = (cache_res > 0) ? (uint32_t)cache_res : 4194304;
+    #else
     const uint32_t l2_cache_size = at::cpu::L2_cache_size();
+    #endif
     return l2_cache_size >> 1;  // use 50% of L2 cache
   }();
   return size;

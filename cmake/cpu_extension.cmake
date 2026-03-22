@@ -170,8 +170,8 @@ if (ENABLE_X86_ISA OR (ASIMD_FOUND AND NOT APPLE_SILICON_FOUND) OR POWER9_FOUND 
 
         find_library(OPEN_MP
             NAMES gomp
-            PATHS ${VLLM_TORCH_GOMP_SHIM_DIR}
-            NO_DEFAULT_PATH
+            PATHS ${VLLM_TORCH_GOMP_SHIM_DIR} /usr/lib64 /usr/lib/aarch64-linux-gnu
+            
             REQUIRED
         )
         # Set LD_LIBRARY_PATH to include the shim dir at build time to use the same libgomp as PyTorch
