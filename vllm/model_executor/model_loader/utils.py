@@ -94,6 +94,33 @@ def initialize_model(
 def process_weights_after_loading(
     model: nn.Module, model_config: ModelConfig, target_device: torch.device
 ) -> None:
+    # VULKAN SURGICAL MIGRATION: Do this ONCE for the entire model
+    if target_device.type == 'vulkan':
+        print("🚀 VULKAN: Performing surgical layer migration...", flush=True)
+        # First, keep embeddings on CPU (they should already be on CPU after loading)
+        for name, m in model.named_modules():
+            if name == "":
+                continue
+            if any(x in name for x in ["embed_tokens", "word_embeddings", "lm_head"]):
+                print(f"📍 Keeping {name} on CPU", flush=True)
+                # Check device via parameters since some modules don't have .device
+                if hasattr(m, 'parameters') and list(m.parameters()):
+                    first_param = next(m.parameters())
+                    if first_param.device.type != 'cpu':
+                        m.to('cpu')
+        # Then move math-heavy layers to Vulkan
+        for name, m in model.named_modules():
+            if name == "":
+                continue
+            if any(x in name for x in ["embed_tokens", "word_embeddings", "lm_head"]):
+                continue  # Already handled above
+            print(f"🔥 Moving {name} to Vulkan", flush=True)
+            # Check device via parameters since some modules don't have .device
+            if hasattr(m, 'parameters') and list(m.parameters()):
+                first_param = next(m.parameters())
+                if first_param.device.type != 'vulkan':
+                    m.to('vulkan')
+    
     for _, module in model.named_modules():
         quant_method = getattr(module, "quant_method", None)
         if isinstance(quant_method, QuantizeMethodBase):
@@ -132,17 +159,10 @@ def device_loading_context(module: torch.nn.Module, target_device: torch.device)
     original_device_states: dict[str, torch.device] = {}
     uva_offloaded_parameters: list[str] = []
 
-    # M1 MAX HANDSHAKE: Check for Vulkan first to bypass C++ bridge limits
     if target_device.type == 'vulkan':
-        for name, p in module.named_parameters():
-            if p.device.type == 'cpu':
-                original_device_states[name] = p.device
-        # For float32, this is the safest, fastest path
-        module.to('vulkan')
-        # Skip UVA handling for Vulkan
-        for name, p in module.named_parameters():
-            if getattr(p, "_vllm_is_uva_offloaded", False):
-                pass  # Vulkan doesn't use UVA
+        # Vulkan is the target - no migration needed here
+        # Migration is handled in process_weights_after_loading
+        pass
     else:
         # Standard vLLM path for other devices
         for name, p in module.named_parameters():

@@ -49,8 +49,11 @@ class BaseModelLoader(ABC):
             device_config.device if load_config.device is None else load_config.device
         )
         target_device = torch.device(load_device)
+        # VULKAN WORKAROUND: Use CPU for model creation - Vulkan doesn't support allocation
+        # Weights will be moved to Vulkan during forward pass as needed
+        creation_device = torch.device('cpu') if load_device.type == 'vulkan' else target_device
         with set_default_torch_dtype(model_config.dtype):
-            with target_device:
+            with creation_device:
                 model = initialize_model(
                     vllm_config=vllm_config, model_config=model_config, prefix=prefix
                 )

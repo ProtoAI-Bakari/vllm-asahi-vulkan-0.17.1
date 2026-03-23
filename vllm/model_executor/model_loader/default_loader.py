@@ -287,7 +287,10 @@ class DefaultModelLoader(BaseModelLoader):
         """
         import torch
         
+        print("🚀 VULKAN INTERCEPTOR: Starting stream...")
+        count = 0
         for name, tensor in weights_iterator:
+            count += 1
             # Check if this is a VocabParallelEmbedding weight
             # Pattern: model.layers.*.embed_tokens.weight or similar
             is_vocab_embedding = (
@@ -307,7 +310,12 @@ class DefaultModelLoader(BaseModelLoader):
             if tensor.dtype != model_config.dtype:
                 tensor = tensor.to(model_config.dtype)
             
+            if count % 100 == 0:
+                print(f"📦 Processed {count} tensors...")
+            
             yield name, tensor
+        
+        print(f"🏁 VULKAN INTERCEPTOR: Finished {count} tensors.")
 
     @instrument(span_name="Load weights")
     def load_weights(self, model: nn.Module, model_config: ModelConfig) -> None:

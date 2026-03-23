@@ -42,11 +42,15 @@ class UnquantizedEmbeddingMethod(QuantizeMethodBase):
         **extra_weight_attrs,
     ):
         """Create weights for embedding layer."""
+        # VULKAN WORKAROUND: Create weights on CPU for Vulkan platform
+        # PyTorch Vulkan backend doesn't support tensor allocation (torch.empty)
+        device = 'cpu' if current_platform.__class__.__name__ == 'VulkanPlatform' else None
         weight = Parameter(
             torch.empty(
                 sum(output_partition_sizes),
                 input_size_per_partition,
                 dtype=params_dtype,
+                device=device,
             ),
             requires_grad=False,
         )
@@ -76,19 +80,27 @@ class UnquantizedEmbeddingMethod(QuantizeMethodBase):
         interceptor to avoid OOM during forward pass. This method performs
         the lookup on CPU and moves the output back to vulkan.
         """
-        # Check if we're on vulkan platform
-        is_vulkan = current_platform.device_type == 'vulkan'
-        weight_on_cpu = layer.weight.device.type == 'cpu'
+        # Check if we're on Vulkan platform (Asahi Linux M1 Max)
+        # Note: is_vulkan_available() may return False due to PyTorch Vulkan support
+        # but we force Vulkan via VLLM_PLATFORM=vulkan env var
+        is_vulkan = current_platform.__class__.__name__ == 'VulkanPlatform'
         
-        if is_vulkan and weight_on_cpu:
-            # VocabParallelEmbedding weights are on CPU (loaded by interceptor)
-            # Perform embedding lookup on CPU, move output to vulkan
+        if is_vulkan:
+            # VULKAN WORKAROUND: Always perform embedding on CPU for Vulkan platform
+            # This avoids the missing index_select kernel on Asahi Vulkan backend
+            # Weights should be on CPU by the interceptor in default_loader.py
+            
+            # Perform embedding lookup on CPU
             input_cpu = input_.to('cpu')
-            output_cpu = F.embedding(input_cpu, layer.weight)
-            return output_cpu.to('vulkan')
-        
-        # Standard path: weights already on target device
-        return F.embedding(input_, layer.weight)
+            # Only move weight to CPU if it's not already there
+            weight_cpu = layer.weight if layer.weight.device.type == 'cpu' else layer.weight.to('cpu')
+            output_cpu = F.embedding(input_cpu, weight_cpu)
+            
+            # Move output back to the target device (vulkan)
+            return output_cpu.to(input_.device)
+        else:
+            # Standard path for other platforms
+            return F.embedding(input_, layer.weight)
 
 
 def pad_vocab_size(vocab_size: int, pad_to: int = DEFAULT_VOCAB_PADDING_SIZE) -> int:
@@ -561,8 +573,10 @@ class ParallelLMHead(VocabParallelEmbedding):
         )
         self.quant_config = quant_config
         if bias:
+            # VULKAN WORKAROUND: Create bias on CPU for Vulkan platform
+            device = 'cpu' if current_platform.__class__.__name__ == 'VulkanPlatform' else None
             self.bias = Parameter(
-                torch.empty(self.num_embeddings_per_partition, dtype=params_dtype)
+                torch.empty(self.num_embeddings_per_partition, dtype=params_dtype, device=device)
             )
             set_weight_attrs(
                 self.bias,
