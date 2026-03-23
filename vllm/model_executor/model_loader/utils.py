@@ -132,13 +132,29 @@ def device_loading_context(module: torch.nn.Module, target_device: torch.device)
     original_device_states: dict[str, torch.device] = {}
     uva_offloaded_parameters: list[str] = []
 
-    # Store original device states and move parameters to GPU if they're on CPU
-    for name, p in module.named_parameters():
-        if p.device.type == "cpu":
-            original_device_states[name] = p.device
-            p.data = p.data.to(target_device)
-        if getattr(p, "_vllm_is_uva_offloaded", False):
-            uva_offloaded_parameters.append(name)
+    # M1 MAX HANDSHAKE: Check for Vulkan first to bypass C++ bridge limits
+    if target_device.type == 'vulkan':
+        for name, p in module.named_parameters():
+            if p.device.type == 'cpu':
+                original_device_states[name] = p.device
+        # For float32, this is the safest, fastest path
+        module.to('vulkan')
+        # Skip UVA handling for Vulkan
+        for name, p in module.named_parameters():
+            if getattr(p, "_vllm_is_uva_offloaded", False):
+                pass  # Vulkan doesn't use UVA
+    else:
+        # Standard vLLM path for other devices
+        for name, p in module.named_parameters():
+            if p.device.type == "cpu":
+                original_device_states[name] = p.device
+                if target_device.type == 'vulkan':
+                    module.to('vulkan')
+                    break
+                else:
+                    p.data = p.data.to(target_device)
+            if getattr(p, "_vllm_is_uva_offloaded", False):
+                uva_offloaded_parameters.append(name)
         # Parameters already on target device are not touched
 
     try:

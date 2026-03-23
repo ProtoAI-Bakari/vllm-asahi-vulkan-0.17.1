@@ -69,6 +69,10 @@ class UnquantizedEmbeddingMethod(QuantizeMethodBase):
         return dispatch_unquantized_gemm()(layer, x, layer.weight, bias)
 
     def embedding(self, layer: torch.nn.Module, input_: torch.Tensor) -> torch.Tensor:
+        if layer.weight.device.type == 'vulkan':
+            # M1 MAX VULKAN WORKAROUND: Vulkan lacks index_select kernel
+            # Hidden states lookup is performed on CPU and moved back to GPU
+            return F.embedding(input_.to('cpu'), layer.weight.to('cpu')).to('vulkan')
         return F.embedding(input_, layer.weight)
 
 
@@ -459,7 +463,11 @@ class VocabParallelEmbedding(CustomOp):
         # Copy the data. Select chunk corresponding to current shard.
         loaded_weight = loaded_weight.narrow(output_dim, start_idx, shard_size)
         param[: loaded_weight.shape[0]].data.copy_(loaded_weight)
-        param[loaded_weight.shape[0] :].data.fill_(0)
+        # M1 MAX VULKAN WORKAROUND: Vulkan lacks fill_ kernel
+        remainder = param[loaded_weight.shape[0] :]
+        if remainder.numel() > 0:
+            zero_padding = torch.zeros_like(remainder, device='cpu')
+            remainder.data.copy_(zero_padding)
 
     def forward_native(self, input_):
         if self.tp_size > 1:

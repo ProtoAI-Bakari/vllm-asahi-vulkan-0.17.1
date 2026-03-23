@@ -153,7 +153,7 @@ class RMSNorm(CustomOp):
         )
         weight_dtype = dtype or torch.get_default_dtype()
         self.has_weight = has_weight
-        self.weight = torch.ones(hidden_size, dtype=weight_dtype)
+        self.weight = torch.ones(hidden_size, dtype=weight_dtype, device='cpu')
         if self.has_weight:
             self.weight = nn.Parameter(self.weight)
 
@@ -412,7 +412,7 @@ class GemmaRMSNorm(CustomOp):
         eps: float = 1e-6,
     ) -> None:
         super().__init__()
-        self.weight = nn.Parameter(torch.zeros(hidden_size))
+        self.weight = nn.Parameter(torch.zeros(hidden_size, device='cpu'))
         self.variance_epsilon = eps
 
     @staticmethod
@@ -613,8 +613,8 @@ class LayerNorm(nn.Module):
         super().__init__()
         self.dim = dim
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim, dtype=torch.float32))
-        self.bias = nn.Parameter(torch.zeros(dim, dtype=torch.float32))
+        self.weight = nn.Parameter(torch.ones(dim, dtype=torch.float32, device='cpu'))
+        self.bias = nn.Parameter(torch.zeros(dim, dtype=torch.float32, device='cpu'))
 
     def forward(self, x: torch.Tensor):
         return F.layer_norm(

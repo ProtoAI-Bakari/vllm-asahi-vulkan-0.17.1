@@ -125,6 +125,18 @@ class CpuPlatform(Platform):
         return "cpu"
 
     @classmethod
+    def num_compute_units(cls, device_id: int = 0) -> int:
+        """
+        Return number of compute units (CPU cores) for the platform.
+        This is used by quantization backends that need hardware info.
+        For CPU, we return the number of available CPU cores.
+        """
+        if hasattr(os, "sched_getaffinity"):
+            return len(os.sched_getaffinity(0))
+        else:
+            return os.cpu_count() or 1
+
+    @classmethod
     def get_attn_backend_cls(
         cls,
         selected_backend: "AttentionBackendEnum",
@@ -392,7 +404,7 @@ class CpuPlatform(Platform):
         allowed_numa_nodes = set()
         for x in logical_cpu_list:
             allowed_numa_nodes.add(x.numa_node)  # type: ignore
-        allowed_numa_nodes_list = sorted(allowed_numa_nodes)
+        allowed_numa_nodes_list = sorted(list(allowed_numa_nodes))
 
         env_key = CpuPlatform.device_control_env_var
         if env_key in os.environ and os.environ[env_key] != "":

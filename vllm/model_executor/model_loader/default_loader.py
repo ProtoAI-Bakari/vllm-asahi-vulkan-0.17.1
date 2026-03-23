@@ -1,3 +1,13 @@
+
+def _vulkan_cpu_caster(weights_iterator, target_dtype):
+    import torch
+    for name, tensor in weights_iterator:
+        # Cast on CPU to avoid Vulkan C++ bridge limitations
+        if tensor.dtype != target_dtype:
+            yield name, tensor.to(target_dtype)
+        else:
+            yield name, tensor
+
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import dataclasses
@@ -287,7 +297,7 @@ class DefaultModelLoader(BaseModelLoader):
                 self.load_config.safetensors_load_strategy = "torchao"
 
         weights_to_load = {name for name, _ in model.named_parameters()}
-        loaded_weights = model.load_weights(self.get_all_weights(model_config, model))
+        loaded_weights = model.load_weights(_vulkan_cpu_caster(self.get_all_weights(model_config, model), model_config.dtype))
 
         self.counter_after_loading_weights = time.perf_counter()
         logger.info_once(

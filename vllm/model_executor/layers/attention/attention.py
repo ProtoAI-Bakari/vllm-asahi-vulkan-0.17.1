@@ -95,10 +95,10 @@ def set_default_quant_scales(layer: nn.Module, register_buffer: bool = False) ->
         layer.register_buffer("_q_scale", torch.tensor(1.0, dtype=torch.float32))
         layer.register_buffer("_prob_scale", torch.tensor(1.0, dtype=torch.float32))
     else:
-        layer._k_scale.fill_(1.0)
-        layer._v_scale.fill_(1.0)
-        layer._q_scale.fill_(1.0)
-        layer._prob_scale.fill_(1.0)
+        layer._k_scale.copy_(torch.ones_like(layer._k_scale, device='cpu'))
+        layer._v_scale.copy_(torch.ones_like(layer._v_scale, device='cpu'))
+        layer._q_scale.copy_(torch.ones_like(layer._q_scale, device='cpu'))
+        layer._prob_scale.copy_(torch.ones_like(layer._prob_scale, device='cpu'))
 
     # We also keep q/k/v_scale on host (cpu) memory for attention
     # backends that require the scales to be on host instead of on device.
