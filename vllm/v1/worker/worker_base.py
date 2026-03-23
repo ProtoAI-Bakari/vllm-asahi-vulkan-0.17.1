@@ -250,7 +250,15 @@ class WorkerWrapperBase:
         parallel_config = vllm_config.parallel_config
         # 🔥 THE ASAHI INTERCEPTOR 🔥
         if parallel_config.worker_cls == 'auto':
-            parallel_config.worker_cls = 'vllm.v1.worker.cpu_worker.CPUWorker'
+            # Use platform's get_worker_cls to determine the correct worker
+            from vllm.platforms import current_platform
+            parallel_config.worker_cls = current_platform.get_worker_cls(
+                vllm_config,
+                local_rank=0,
+                rank=0,
+                distributed_init_method="env://",
+                is_driver_worker=True
+            )
         if isinstance(parallel_config.worker_cls, str):
             worker_class: type[WorkerBase] = resolve_obj_by_qualname(
                 parallel_config.worker_cls

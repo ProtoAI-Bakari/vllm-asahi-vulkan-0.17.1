@@ -251,6 +251,14 @@ class EngineCore:
                 # much memory can be allocated for kv cache.
                 available_gpu_memory = self.model_executor.determine_available_memory()
                 self.available_gpu_memory_for_kv_cache = available_gpu_memory[0]
+                # VULKAN ASAHI LOBOTOMY: Stop the greed - limit available memory for Vulkan
+                from vllm.platforms import current_platform
+        if current_platform.device_type == "vulkan":
+                    # Vulkan on Asahi has limited device-local memory (~15GB shared)
+                    # Limit to 1GB to prevent VMA_ERROR_OUT_OF_DEVICE_MEMORY
+                    available_gpu_memory = [256 * 1024 * 1024]  # 1GB
+                    self.available_gpu_memory_for_kv_cache = 256 * 1024 * 1024
+                    print(f"⚠️ VULKAN OVERRIDE: Limited available memory to 1GB for Vulkan stability.")
         else:
             # Attention free models don't need memory for kv cache
             available_gpu_memory = [0] * len(kv_cache_specs)
@@ -868,6 +876,16 @@ class EngineCoreProc(EngineCore):
             )
             self.output_thread.start()
 
+
+            # VULKAN DEADLOCK BYPASS: Tell the client we are alive
+            if os.environ.get('VLLM_PLATFORM') == 'vulkan':
+                print(f">>> VULKAN HANDSHAKE: Unblocking client for rank {self.engine_index}")
+                _ctx = zmq.Context.instance()
+                for _addr in addresses.inputs:
+                    with _ctx.socket(zmq.PUSH) as _s:
+                        _s.connect(_addr)
+                        _s.send_multipart([identity])
+
             # Don't complete handshake until DP coordinator ready message is
             # received.
             while not ready_event.wait(timeout=10):
@@ -958,14 +976,13 @@ class EngineCoreProc(EngineCore):
             addresses = self.startup_handshake(
                 handshake_socket, local_client, headless, parallel_config_to_update
             )
-            yield addresses
 
-            # Send ready message.
-            num_gpu_blocks = vllm_config.cache_config.num_gpu_blocks
+            # Send ready message BEFORE yielding to unblock the client
+            num_gpu_blocks = vllm_config.cache_config.num_gpu_blocks or 0
             # We pass back the coordinator stats update address here for the
             # external LB case for our colocated front-end to use (coordinator
             # only runs with rank 0).
-            dp_stats_address = self.frontend_stats_publish_address
+            dp_stats_address = addresses.frontend_stats_publish_address
 
             # Include config hash for DP configuration validation
             ready_msg = {
@@ -981,6 +998,14 @@ class EngineCoreProc(EngineCore):
                 )
 
             handshake_socket.send(msgspec.msgpack.encode(ready_msg))
+
+            # Also send identity on input socket so client can receive it
+            ctx = zmq.Context()
+            for input_addr in addresses.inputs:
+                with ctx.socket(zmq.PUSH) as identity_socket:
+                    identity_socket.connect(input_addr)
+                    identity_socket.send_multipart([identity])
+            yield addresses
 
     @staticmethod
     def startup_handshake(
@@ -1119,6 +1144,8 @@ class EngineCoreProc(EngineCore):
 
     def run_busy_loop(self):
         """Core busy loop of the EngineCore."""
+        import sys
+        print(">>> ENGINE_CORE: run_busy_loop START", file=sys.stderr, flush=True)
 
         # Loop until process is sent a SIGINT or SIGTERM
         while True:
