@@ -69,10 +69,25 @@ class UnquantizedEmbeddingMethod(QuantizeMethodBase):
         return dispatch_unquantized_gemm()(layer, x, layer.weight, bias)
 
     def embedding(self, layer: torch.nn.Module, input_: torch.Tensor) -> torch.Tensor:
-        if layer.weight.device.type == 'vulkan':
-            # M1 MAX VULKAN WORKAROUND: Vulkan lacks index_select kernel
-            # Hidden states lookup is performed on CPU and moved back to GPU
-            return F.embedding(input_.to('cpu'), layer.weight.to('cpu')).to('vulkan')
+        """
+        Perform embedding lookup with Vulkan support for Asahi Linux (M1 Max).
+        
+        VocabParallelEmbedding weights are loaded on CPU by the weight loader
+        interceptor to avoid OOM during forward pass. This method performs
+        the lookup on CPU and moves the output back to vulkan.
+        """
+        # Check if we're on vulkan platform
+        is_vulkan = current_platform.device_type == 'vulkan'
+        weight_on_cpu = layer.weight.device.type == 'cpu'
+        
+        if is_vulkan and weight_on_cpu:
+            # VocabParallelEmbedding weights are on CPU (loaded by interceptor)
+            # Perform embedding lookup on CPU, move output to vulkan
+            input_cpu = input_.to('cpu')
+            output_cpu = F.embedding(input_cpu, layer.weight)
+            return output_cpu.to('vulkan')
+        
+        # Standard path: weights already on target device
         return F.embedding(input_, layer.weight)
 
 
@@ -134,7 +149,7 @@ class VocabParallelEmbeddingShardIndices:
 
     @property
     def num_added_vocab_padding(self) -> int:
-        return self.num_added_elements_padded - self.num_added_elements
+        return self.padded_added_vocab_end_index - self.added_vocab_end_index
 
     @property
     def num_elements_padded(self) -> int:
@@ -464,7 +479,8 @@ class VocabParallelEmbedding(CustomOp):
         loaded_weight = loaded_weight.narrow(output_dim, start_idx, shard_size)
         param[: loaded_weight.shape[0]].data.copy_(loaded_weight)
         # M1 MAX VULKAN WORKAROUND: Vulkan lacks fill_ kernel
-        remainder = param[loaded_weight.shape[0] :]
+        # Zero padding on CPU to avoid driver issues
+        remainder = param[loaded_weight.shape[0]:]
         if remainder.numel() > 0:
             zero_padding = torch.zeros_like(remainder, device='cpu')
             remainder.data.copy_(zero_padding)

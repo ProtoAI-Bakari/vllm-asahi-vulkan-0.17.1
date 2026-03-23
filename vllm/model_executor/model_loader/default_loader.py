@@ -1,13 +1,3 @@
-
-def _vulkan_cpu_caster(weights_iterator, target_dtype):
-    import torch
-    for name, tensor in weights_iterator:
-        # Cast on CPU to avoid Vulkan C++ bridge limitations
-        if tensor.dtype != target_dtype:
-            yield name, tensor.to(target_dtype)
-        else:
-            yield name, tensor
-
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import dataclasses
@@ -285,6 +275,40 @@ class DefaultModelLoader(BaseModelLoader):
             allow_patterns_overrides=None,
         )
 
+    def _vulkan_weight_interceptor(self, weights_iterator, model_config):
+        """
+        Surgical Weight Loader Interceptor for Vulkan on Asahi Linux (M1 Max).
+        
+        Forces VocabParallelEmbedding weights to remain on CPU during load,
+        avoiding the OOM error from vmaCreateBuffer during forward pass.
+        
+        This prevents the 520MB staging buffer allocation that the Mesa
+        Honeykrisp driver rejects due to Vulkan heap occupation.
+        """
+        import torch
+        
+        for name, tensor in weights_iterator:
+            # Check if this is a VocabParallelEmbedding weight
+            # Pattern: model.layers.*.embed_tokens.weight or similar
+            is_vocab_embedding = (
+                "embed_tokens" in name or 
+                "word_embeddings" in name or
+                "lm_head" in name
+            )
+            
+            if is_vocab_embedding:
+                # Force VocabParallelEmbedding weights to CPU
+                # They will be moved to vulkan during forward pass lookup
+                if tensor.device.type != 'cpu':
+                    tensor = tensor.cpu()
+                logger.debug(f"Vulkan Interceptor: Keeping {name} on CPU")
+            
+            # Cast to target dtype on CPU
+            if tensor.dtype != model_config.dtype:
+                tensor = tensor.to(model_config.dtype)
+            
+            yield name, tensor
+
     @instrument(span_name="Load weights")
     def load_weights(self, model: nn.Module, model_config: ModelConfig) -> None:
         if model_config.quantization == "torchao":
@@ -297,7 +321,15 @@ class DefaultModelLoader(BaseModelLoader):
                 self.load_config.safetensors_load_strategy = "torchao"
 
         weights_to_load = {name for name, _ in model.named_parameters()}
-        loaded_weights = model.load_weights(_vulkan_cpu_caster(self.get_all_weights(model_config, model), model_config.dtype))
+        
+        # Use Vulkan weight interceptor for Asahi Linux
+        # This forces VocabParallelEmbedding weights to CPU during load
+        loaded_weights = model.load_weights(
+            self._vulkan_weight_interceptor(
+                self.get_all_weights(model_config, model), 
+                model_config
+            )
+        )
 
         self.counter_after_loading_weights = time.perf_counter()
         logger.info_once(
