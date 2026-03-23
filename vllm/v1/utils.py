@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import os
 import argparse
 import contextlib
 import multiprocessing
@@ -114,7 +115,11 @@ class CpuGpuBuffer:
         with_numpy: bool = True,
     ) -> None:
         self.cpu = torch.zeros(*size, dtype=dtype, device="cpu", pin_memory=pin_memory)
-        self.gpu = torch.zeros_like(self.cpu, device=device)
+        # Vulkan doesn't support empty_strided, force CPU for buffer
+        if os.environ.get("VLLM_PLATFORM") == "vulkan":
+            self.gpu = self.cpu  # Share CPU memory for Vulkan
+        else:
+            self.gpu = torch.zeros_like(self.cpu, device=device)
         self.np: np.ndarray
         # To keep type hints simple (avoiding generics and subclasses), we
         # only conditionally create the numpy array attribute. This can cause

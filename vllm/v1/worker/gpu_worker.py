@@ -219,7 +219,9 @@ class Worker(WorkerBase):
 
     @instrument(span_name="Init device")
     def init_device(self):
-        if self.device_config.device_type == "cuda":
+        import sys
+        print(">>> WORKER: init_device START", file=sys.stderr)
+        if self.device_config.device_type in ("cuda", "vulkan"):
             # This env var set by Ray causes exceptions with graph building.
             os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)
             parallel_config = self.parallel_config
@@ -241,19 +243,25 @@ class Worker(WorkerBase):
 
                 # DP_LOCAL_RANK * TP_PP_WORLD_SIZE + TP_LOCAL_RANK
                 self.local_rank += dp_local_rank * tp_pp_world_size
-                assert self.local_rank < torch.cuda.device_count(), (
-                    f"DP adjusted local rank {self.local_rank} is out of bounds. "
-                )
-                visible_device_count = (
-                    torch.cuda.device_count() if torch.cuda.is_available() else 0
-                )
-                assert self.parallel_config.local_world_size <= visible_device_count, (
-                    f"local_world_size ({self.parallel_config.local_world_size}) must "
-                    f"be less than or equal to the number of visible devices "
-                    f"({visible_device_count})."
-                )
+                if self.device_config.device_type == "cuda":
+                    assert self.local_rank < torch.cuda.device_count(), (
+                        f"DP adjusted local rank {self.local_rank} is out of bounds. "
+                    )
+                if self.device_config.device_type == "cuda":
+                    visible_device_count = (
+                        torch.cuda.device_count() if torch.cuda.is_available() else 0
+                    )
+                    assert self.parallel_config.local_world_size <= visible_device_count, (
+                        f"local_world_size ({self.parallel_config.local_world_size}) must "
+                        f"be less than or equal to the number of visible devices "
+                        f"({visible_device_count})."
+                    )
 
-            self.device = torch.device(f"cuda:{self.local_rank}")
+            if self.device_config.device_type == "cuda":
+                self.device = torch.device(f"cuda:{self.local_rank}")
+            else:
+                # Vulkan device
+                self.device = torch.device(f"vulkan:{self.local_rank}")
             current_platform.set_device(self.device)
 
             current_platform.check_if_supports_dtype(self.model_config.dtype)
@@ -278,7 +286,8 @@ class Worker(WorkerBase):
 
             # Now take memory snapshot after NCCL is initialized
             gc.collect()
-            torch.cuda.empty_cache()
+            if self.device_config.device_type == "cuda":
+                torch.cuda.empty_cache()
 
             # take current memory snapshot
             self.init_snapshot = init_snapshot = MemorySnapshot(device=self.device)
@@ -288,7 +297,8 @@ class Worker(WorkerBase):
                 "worker requested memory: %sGiB", format_gib(self.requested_memory)
             )
         else:
-            raise RuntimeError(f"Not support device type: {self.device_config.device}")
+            if self.device_config.device_type not in ("cuda", "vulkan"):
+                raise RuntimeError(f"Not support device type: {self.device_config.device}")
 
         # Initialize workspace manager
         num_ubatches = 2 if self.vllm_config.parallel_config.enable_dbo else 1
@@ -314,10 +324,15 @@ class Worker(WorkerBase):
         if self.rank == 0:
             # If usage stat is enabled, collect relevant info.
             report_usage_stats(self.vllm_config)
+        
+        import sys
+        print(">>> WORKER: init_device COMPLETE", file=sys.stderr)
 
     # FIXME(youkaichao & ywang96): Use TorchDispatchMode instead of memory pool
     # to hijack tensor allocation.
     def load_model(self) -> None:
+        import sys
+        print(">>> WORKER: load_model START", file=sys.stderr, flush=True)
         dummy_weights = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
         if dummy_weights:
             (
@@ -341,6 +356,10 @@ class Worker(WorkerBase):
                 expanded_physical_to_logical, old_num_physical_experts
             )
             self.model_runner.eep_eplb_suppressed = True
+        
+        import sys
+        print(">>> WORKER: load_model COMPLETE", file=sys.stderr, flush=True)
+        print(">>> WORKER: load_model COMPLETE", file=sys.stderr)
 
     def update_config(self, overrides: dict[str, Any]) -> None:
         self.model_runner.update_config(overrides)
@@ -361,6 +380,19 @@ class Worker(WorkerBase):
             You may limit the usage of GPU memory
             by adjusting the `gpu_memory_utilization` parameter.
         """
+        # VULKAN ASAHI OVERRIDE: Skip profile_run to avoid VMA_ERROR_OUT_OF_DEVICE_MEMORY
+        # The profile_run triggers a forward pass that fails on Vulkan because
+        # vocab_parallel_embedding tries to move weights to CPU which fails.
+        from vllm.platforms import current_platform
+        import vllm.envs as envs
+        is_vulkan = (current_platform.__class__.__name__ == 'VulkanPlatform' or 
+                     getattr(envs, 'VLLM_PLATFORM', None) == "vulkan")
+        if is_vulkan:
+            print("⚠️ VULKAN OVERRIDE: Skipping profile_run, using fixed 1GB memory estimate.")
+            # Return conservative memory estimate for Vulkan on Asahi M1 Max
+            # 1GB = 256 * 1024 * 1024 bytes
+            return 256 * 1024 * 1024
+
         if kv_cache_memory_bytes := self.cache_config.kv_cache_memory_bytes:
             # still need a profile run which compiles the model for
             # max_num_batched_tokens
@@ -594,21 +626,28 @@ class Worker(WorkerBase):
             # fragmentation issue.
             # NOTE: This is called after `capture_model` on purpose to prevent
             # memory buffers from being cleared by `torch.cuda.empty_cache`.
-            max_num_reqs = min(
-                self.scheduler_config.max_num_seqs,
-                self.scheduler_config.max_num_batched_tokens,
-            )
-
-            # We skip EPLB here since we don't want to record dummy metrics
-            hidden_states, last_hidden_states = self.model_runner._dummy_run(
-                num_tokens=max_num_reqs,
-                skip_eplb=True,
-                cudagraph_runtime_mode=CUDAGraphMode.NONE,
-            )
-            if self.model_runner.is_pooling_model:
-                self.model_runner._dummy_pooler_run(hidden_states)
+            # VULKAN ASAHI FIX: Skip warmup entirely - Vulkan VMA allocator fails
+            from vllm.platforms import current_platform
+            if current_platform.device_type == "vulkan":
+                logger.info("⚠️ VULKAN: Skipping warmup to prevent VMA_ERROR_OUT_OF_DEVICE_MEMORY")
             else:
-                self.model_runner._dummy_sampler_run(hidden_states=last_hidden_states)
+                max_num_reqs = min(
+                    self.scheduler_config.max_num_seqs,
+                    self.scheduler_config.max_num_batched_tokens,
+                )
+                # We skip EPLB here since we do not want to record dummy metrics
+                hidden_states, last_hidden_states = self.model_runner._dummy_run(
+                    num_tokens=max_num_reqs,
+                    skip_eplb=True,
+                    cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                )
+            # VULKAN: Skip pooling/sampler warmup - variables not defined
+            from vllm.platforms import current_platform
+            if current_platform.device_type != "vulkan":
+                if self.model_runner.is_pooling_model:
+                    self.model_runner._dummy_pooler_run(hidden_states)
+                else:
+                    self.model_runner._dummy_sampler_run(hidden_states=last_hidden_states)
 
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.

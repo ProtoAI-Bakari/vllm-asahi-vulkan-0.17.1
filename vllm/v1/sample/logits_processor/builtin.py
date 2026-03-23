@@ -36,7 +36,7 @@ class MinPLogitsProcessor(LogitsProcessor):
         if self.use_double_tensor:
             # Pre-allocated device tensor
             self.min_p_device: torch.Tensor = torch.empty(
-                (max_num_reqs,), dtype=torch.float32, device=device
+                (max_num_reqs,), dtype=torch.float32, device="cpu"
             )
         else:
             self.min_p_device = self.min_p_cpu_tensor
@@ -154,9 +154,12 @@ class LogitBiasLogitsProcessor(LogitsProcessor):
             )
 
     def _device_tensor(self, data: list, dtype: torch.dtype) -> torch.Tensor:
+        # VULKAN WORKAROUND: Keep tensors on CPU to avoid empty_strided error
+        if self.device.type == "vulkan":
+            return torch.tensor(data, device="cpu", dtype=dtype)
         return torch.tensor(
             data, device="cpu", dtype=dtype, pin_memory=self.pin_memory
-        ).to(device=self.device, non_blocking=True)
+        ).to(device="cpu", non_blocking=True)
 
     def apply(self, logits: torch.Tensor) -> torch.Tensor:
         if self.biases:
@@ -179,9 +182,15 @@ class MinTokensLogitsProcessor(LogitsProcessor):
             self._device_tensor([], torch.int32),
         )
 
-        self.neg_inf_tensor = torch.tensor(
-            -float("inf"), dtype=torch.float32, device=self.device
-        )
+        # VULKAN WORKAROUND: Keep on CPU to avoid empty_strided error
+        if self.device.type == "vulkan":
+            self.neg_inf_tensor = torch.tensor(
+                -float("inf"), dtype=torch.float32, device="cpu"
+            )
+        else:
+            self.neg_inf_tensor = torch.tensor(
+                -float("inf"), dtype=torch.float32, device="cpu"
+            )
 
     def is_argmax_invariant(self) -> bool:
         """By censoring stop tokens, min-tokens can change the outcome
@@ -227,9 +236,12 @@ class MinTokensLogitsProcessor(LogitsProcessor):
             )
 
     def _device_tensor(self, data: list, dtype: torch.dtype) -> torch.Tensor:
+        # VULKAN WORKAROUND: Keep tensors on CPU to avoid empty_strided error
+        if self.device.type == "vulkan":
+            return torch.tensor(data, device="cpu", dtype=dtype)
         return torch.tensor(
             data, device="cpu", dtype=dtype, pin_memory=self.pin_memory
-        ).to(device=self.device, non_blocking=True)
+        ).to(device="cpu", non_blocking=True)
 
     def apply(self, logits: torch.Tensor) -> torch.Tensor:
         if self.min_toks:

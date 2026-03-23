@@ -46,12 +46,18 @@ def check_attention_cp_compatibility(vllm_config: VllmConfig) -> None:
 def get_total_cp_world_size():
     try:
         pcp_world_size = get_pcp_group().world_size
-    except AssertionError:
+    except (AssertionError, AttributeError):
         # PCP might not be initialized in testing
+        pcp_world_size = 1
+    # Handle None value explicitly
+    if pcp_world_size is None:
         pcp_world_size = 1
     try:
         dcp_world_size = get_dcp_group().world_size
-    except AssertionError:
+    except (AssertionError, AttributeError):
         # DCP might not be initialized in testing
+        dcp_world_size = 1
+    # Handle None value explicitly
+    if dcp_world_size is None:
         dcp_world_size = 1
     return dcp_world_size * pcp_world_size

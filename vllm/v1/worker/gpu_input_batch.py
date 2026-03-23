@@ -1,3 +1,4 @@
+import os
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # Datastructures defining a GPU input batch
@@ -151,8 +152,10 @@ class InputBatch:
         )
 
         # Sampling-related.
+        # Vulkan doesn't support empty, force CPU
+        temp_device = "cpu" if os.environ.get("VLLM_PLATFORM") == "vulkan" else device
         self.temperature = torch.empty(
-            (max_num_reqs,), dtype=torch.float32, device=device
+            (max_num_reqs,), dtype=torch.float32, device=temp_device
         )
         self.temperature_cpu_tensor = torch.empty(
             (max_num_reqs,), dtype=torch.float32, device="cpu", pin_memory=pin_memory
@@ -161,14 +164,15 @@ class InputBatch:
         self.greedy_reqs: set[str] = set()
         self.random_reqs: set[str] = set()
 
-        self.top_p = torch.empty((max_num_reqs,), dtype=torch.float32, device=device)
+        top_p_device = "cpu" if os.environ.get("VLLM_PLATFORM") == "vulkan" else device
+        self.top_p = torch.empty((max_num_reqs,), dtype=torch.float32, device=top_p_device)
         self.top_p_cpu_tensor = torch.empty(
             (max_num_reqs,), dtype=torch.float32, device="cpu", pin_memory=pin_memory
         )
         self.top_p_cpu = self.top_p_cpu_tensor.numpy()
         self.top_p_reqs: set[str] = set()
 
-        self.top_k = torch.empty((max_num_reqs,), dtype=torch.int32, device=device)
+        self.top_k = torch.empty((max_num_reqs,), dtype=torch.int32, device="cpu" if os.environ.get("VLLM_PLATFORM") == "vulkan" else device)
         self.top_k_cpu_tensor = torch.empty(
             (max_num_reqs,), dtype=torch.int32, device="cpu", pin_memory=pin_memory
         )

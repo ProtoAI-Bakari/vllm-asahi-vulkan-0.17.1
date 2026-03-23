@@ -82,16 +82,18 @@ class BlockTable:
             self._kernel_block_arange = None
 
         try:
-            self.pcp_world_size = get_pcp_group().world_size
-            self.pcp_rank = get_pcp_group().rank_in_group
-        except AssertionError:
+            pcp_group = get_pcp_group()
+            self.pcp_world_size = pcp_group.world_size if pcp_group.world_size is not None else 1
+            self.pcp_rank = pcp_group.rank_in_group if pcp_group.rank_in_group is not None else 0
+        except (AssertionError, AttributeError):
             # PCP might not be initialized in testing
             self.pcp_world_size = 1
             self.pcp_rank = 0
         try:
-            self.dcp_world_size = get_dcp_group().world_size
-            self.dcp_rank = get_dcp_group().rank_in_group
-        except AssertionError:
+            dcp_group = get_dcp_group()
+            self.dcp_world_size = dcp_group.world_size if dcp_group.world_size is not None else 1
+            self.dcp_rank = dcp_group.rank_in_group if dcp_group.rank_in_group is not None else 0
+        except (AssertionError, AttributeError):
             # DCP might not be initialized in testing
             self.dcp_world_size = 1
             self.dcp_rank = 0
@@ -265,6 +267,10 @@ class MultiGroupBlockTable:
         max_num_blocks: list[int] | None = None,
         cp_kv_cache_interleave_size: int = 1,
     ) -> None:
+        import sys
+        print(f"DEBUG: block_sizes={block_sizes}", file=sys.stderr)
+        print(f"DEBUG: kernel_block_sizes={kernel_block_sizes}", file=sys.stderr)
+        print(f"DEBUG: max_model_len={max_model_len}", file=sys.stderr)
         if len(kernel_block_sizes) != len(block_sizes):
             raise ValueError(
                 f"kernel_block_sizes length ({len(kernel_block_sizes)}) "
@@ -276,8 +282,11 @@ class MultiGroupBlockTable:
             # so the block_size which used for calc max_num_blocks_per_req
             # must be multiplied by dcp_world_size.
             total_cp_world_size = get_total_cp_world_size()
+            # Explicit None check for safety
+            if total_cp_world_size is None:
+                total_cp_world_size = 1
             max_num_blocks = [
-                cdiv(max_model_len, block_size * total_cp_world_size)
+                cdiv(max_model_len, block_size * (total_cp_world_size if total_cp_world_size is not None else 1))
                 for block_size in block_sizes
             ]
 
