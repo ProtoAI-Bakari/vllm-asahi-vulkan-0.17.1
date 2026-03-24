@@ -181,7 +181,7 @@ class InputBatch:
 
         # Frequency penalty related data structures
         self.frequency_penalties = torch.empty(
-            (max_num_reqs,), dtype=torch.float, device=device
+            (max_num_reqs,), dtype=torch.float, device="cpu" if os.environ.get("VLLM_PLATFORM") == "vulkan" else device
         )
         self.frequency_penalties_cpu_tensor = torch.empty(
             (max_num_reqs,), dtype=torch.float, device="cpu", pin_memory=pin_memory
@@ -191,7 +191,7 @@ class InputBatch:
 
         # Presence penalty related data structures
         self.presence_penalties = torch.empty(
-            (max_num_reqs,), dtype=torch.float, device=device
+            (max_num_reqs,), dtype=torch.float, device="cpu" if os.environ.get("VLLM_PLATFORM") == "vulkan" else device
         )
         self.presence_penalties_cpu_tensor = torch.empty(
             (max_num_reqs,), dtype=torch.float, device="cpu", pin_memory=pin_memory
@@ -201,7 +201,7 @@ class InputBatch:
 
         # Repetition penalty related data structures
         self.repetition_penalties = torch.empty(
-            (max_num_reqs,), dtype=torch.float, device=device
+            (max_num_reqs,), dtype=torch.float, device="cpu" if os.environ.get("VLLM_PLATFORM") == "vulkan" else device
         )
         self.repetition_penalties_cpu_tensor = torch.empty(
             (max_num_reqs,), dtype=torch.float, device="cpu", pin_memory=pin_memory
@@ -211,7 +211,7 @@ class InputBatch:
 
         # Speculative decoding
         self.num_accepted_tokens_cpu_tensor = torch.ones(
-            (max_num_reqs,), dtype=torch.int64, device="cpu", pin_memory=pin_memory
+            (max_num_reqs,), dtype=torch.int32, device="cpu", pin_memory=pin_memory
         )
         self.num_accepted_tokens_cpu = self.num_accepted_tokens_cpu_tensor.numpy()
 
@@ -884,7 +884,7 @@ class InputBatch:
         prompt_token_ids_cpu_tensor = torch.empty(
             (self.num_reqs, max_prompt_len),
             device="cpu",
-            dtype=torch.int64,
+            dtype=torch.int32,
             pin_memory=self.pin_memory,
         )
         prompt_token_ids = prompt_token_ids_cpu_tensor.numpy()
@@ -893,6 +893,8 @@ class InputBatch:
         # token_id of this value.
         for i in range(num_reqs):
             prompt_token_ids[i, self.num_prompt_tokens[i] :] = self.vocab_size
+        if os.environ.get("VLLM_PLATFORM") == "vulkan":
+            return prompt_token_ids_cpu_tensor
         return prompt_token_ids_cpu_tensor.to(device=self.device, non_blocking=True)
 
     def make_lora_inputs(
@@ -960,8 +962,9 @@ class InputBatch:
                 # been discarded after a kv-load failure.
                 continue
             if sampled_token_ids is None:
-                assert self.async_copy_ready_event is not None
-                self.async_copy_ready_event.synchronize()
+                # Only synchronize if event exists (CUDA only)
+                if self.async_copy_ready_event is not None:
+                    self.async_copy_ready_event.synchronize()
                 sampled_token_ids = self.sampled_token_ids_cpu.tolist()
             # Replace placeholder token id(s) with actual sampled id(s).
             new_ids: list[int] = sampled_token_ids[prev_index]

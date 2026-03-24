@@ -41,7 +41,8 @@ def get_token_bin_counts_and_mask(
     bin_counts = torch.zeros(
         (num_seqs, vocab_size + 1), dtype=torch.long, device=tokens.device
     )
-    bin_counts.scatter_add_(1, tokens, torch.ones_like(tokens))
+    # FIX: Ensure dtype matches bin_counts (torch.long) for scatter_add
+    bin_counts.scatter_add_(1, tokens, torch.ones_like(tokens, dtype=torch.long))
     bin_counts = bin_counts[:, :vocab_size]
     mask = bin_counts > 0
 
@@ -95,6 +96,17 @@ def default_unquantized_gemm(
     weight: torch.Tensor,
     bias: torch.Tensor | None = None,
 ):
+    # VULKAN: Use CPU for all linear operations
+    if current_platform.__class__.__name__ == 'VulkanPlatform':
+        try:
+            x_cpu = x.to('cpu')
+            weight_cpu = weight.to('cpu')
+            bias_cpu = bias.to('cpu') if bias is not None else None
+            output_cpu = torch.nn.functional.linear(x_cpu, weight_cpu, bias_cpu)
+            return output_cpu.to(x.device)
+        except Exception:
+            # Fallback to original if CPU transfer fails
+            pass
     return torch.nn.functional.linear(x, weight, bias)
 
 

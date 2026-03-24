@@ -36,7 +36,7 @@ MODULE_ATTRS = {
     "CompletionOutput": ".outputs:CompletionOutput",
     "EmbeddingOutput": ".outputs:EmbeddingOutput",
     "EmbeddingRequestOutput": ".outputs:EmbeddingRequestOutput",
-    "PoolingOutput": ".outputs:PoolingOutput",
+    "PoolingOutput": ".outputs:PoolngOutput",
     "PoolingRequestOutput": ".outputs:PoolingRequestOutput",
     "RequestOutput": ".outputs:RequestOutput",
     "ScoringOutput": ".outputs:ScoringOutput",
@@ -63,7 +63,6 @@ if typing.TYPE_CHECKING:
         ScoringRequestOutput,
     )
     from vllm.pooling_params import PoolingParams
-    from vllm.sampling_params import SamplingParams
     from vllm.v1.executor.ray_utils import initialize_ray_cluster
 else:
 

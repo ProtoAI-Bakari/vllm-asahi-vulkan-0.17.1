@@ -1,0 +1,25 @@
+--- a/vllm/v1/engine/core.py
++++ b/vllm/v1/engine/core.py
+@@ -33,12 +33,20 @@ import torch
+ if os.environ.get('VLLM_PLATFORM') == 'vulkan':
+     # 1. Scalar Shield: Force all integer transfers to int32 (FIXED RECURSION)
+     # Save the original unpatched method
+-    _orig_to = torch.Tensor.to.__func__
++    # Handle PyTorch 2.10+ where Tensor.to is a method_descriptor without __func__
++    if hasattr(torch.Tensor.to, '__func__'):
++        _orig_to = torch.Tensor.to.__func__
++    else:
++        # PyTorch 2.10+ compatibility - use the method directly
++        _orig_to = torch.Tensor.to
+     def _vulkan_to(self, *args, **kwargs):
+         # Check if already int32 to avoid recursion
+         if self.dtype == torch.int64:
+             # Convert to int32 first, then apply original to
+-            int32_tensor = _orig_to(self, torch.int32)
++            if hasattr(_orig_to, '__self__'):
++                int32_tensor = _orig_to(self, torch.int32)
++            else:
++                int32_tensor = _orig_to.__get__(self, torch.Tensor)(torch.int32)
+             return _orig_to(int32_tensor, *args, **kwargs)
+         return _orig_to(self, *args, **kwargs)
+     torch.Tensor.to = _vulkan_to

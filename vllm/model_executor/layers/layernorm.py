@@ -287,6 +287,9 @@ class RMSNorm(CustomOp):
         x: torch.Tensor,
         residual: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        # VULKAN: Use native implementation for Vulkan backend
+        if current_platform.__class__.__name__ == 'VulkanPlatform':
+            return self.forward_native(x, residual)
         if self.variance_size_override is not None:
             return self.forward_native(x, residual)
 
@@ -475,6 +478,9 @@ class GemmaRMSNorm(CustomOp):
         x: torch.Tensor,
         residual: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        # VULKAN: Use native implementation for Vulkan backend
+        if current_platform.__class__.__name__ == 'VulkanPlatform':
+            return self.forward_native(x, residual)
         if torch.compiler.is_compiling():
             return self.forward_native(x, residual)
 

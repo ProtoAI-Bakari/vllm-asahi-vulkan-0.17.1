@@ -33,11 +33,7 @@ import torch
 if os.environ.get('VLLM_PLATFORM') == 'vulkan':
     # 1. Scalar Shield: Force all integer transfers to int32 (FIXED RECURSION)
     # Save the original unpatched method
-    # Handle PyTorch 2.10+ where Tensor.to is a method_descriptor without __func__
-    if hasattr(torch.Tensor.to, '__func__'):
-        _orig_to = torch.Tensor.to.__func__
-    else:
-        _orig_to = torch.Tensor.to
+    _orig_to = torch.Tensor.to.__func__
     def _vulkan_to(self, *args, **kwargs):
         # Check if already int32 to avoid recursion
         if self.dtype == torch.int64:
@@ -48,11 +44,7 @@ if os.environ.get('VLLM_PLATFORM') == 'vulkan':
     torch.Tensor.to = _vulkan_to
     
     # 2. Kernel Bridge: Fallback for missing Vulkan kernels (as_strided)
-    # Handle PyTorch 2.10+ where Tensor.as_strided is a method_descriptor
-    if hasattr(torch.Tensor.as_strided, '__func__'):
-        _orig_as_strided = torch.Tensor.as_strided.__func__
-    else:
-        _orig_as_strided = torch.Tensor.as_strided
+    _orig_as_strided = torch.Tensor.as_strided.__func__
     def _vulkan_as_strided(self, size, stride, storage_offset=0):
         try:
             return _orig_as_strided(self, size, stride, storage_offset)

@@ -333,9 +333,16 @@ def copy_slice(
 
     Used to copy pinned CPU tensor data to pre-allocated GPU tensors.
 
+    VULKAN FIX: Cast integer tensors to int32 before transfer (Vulkan int64 unsupported)
+
     Returns the sliced target tensor.
     """
-    return to_tensor[:length].copy_(from_tensor[:length], non_blocking=True)
+    with torch.inference_mode(False):
+        # VULKAN: Cast integer source tensors to int32 before transfer
+        src = from_tensor[:length]
+        if src.dtype in (torch.int64, torch.int32):
+            src = src.to(torch.int32)
+        return to_tensor[:length].copy_(src, non_blocking=True)
 
 
 def report_usage_stats(

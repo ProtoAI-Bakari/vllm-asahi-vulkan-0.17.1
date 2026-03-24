@@ -199,6 +199,9 @@ class CustomOp(nn.Module):
             return self.forward_xpu
         elif current_platform.is_out_of_tree():
             return self.forward_oot
+        elif current_platform.__class__.__name__ == 'VulkanPlatform':
+            # Vulkan doesn't support custom ops, use native PyTorch implementation
+            return self.forward_native
         else:
             return self.forward_cuda
 

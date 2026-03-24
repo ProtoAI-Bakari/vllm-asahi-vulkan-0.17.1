@@ -74,7 +74,7 @@ class BlockTables:
         self.slot_mappings = torch.zeros(
             self.num_kv_cache_groups,
             self.max_num_batched_tokens,
-            dtype=torch.int64,
+            dtype=torch.int32,  # VULKAN: int64 not supported
             device=self.device,
         )
 

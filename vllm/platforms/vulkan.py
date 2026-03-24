@@ -28,19 +28,28 @@ class VulkanPlatform(Platform):
         return torch.is_vulkan_available()
     
     @classmethod
-    def is_pin_memory_available(cls) -> bool:
-        """Vulkan does not support pinned memory like CUDA."""
-        return False
-    
-    @classmethod
     def get_attn_backend_cls(
         cls,
         selected_backend,
         attn_selector_config,
         num_heads=None,
     ) -> str:
-        """Vulkan uses Torch SDPA attention backend since it's pure PyTorch."""
-        return "vllm.v1.attention.backends.flex_attention.FlexAttentionBackend"
+        """Vulkan uses CPU attention backend for stability (flex_attention has CUDA op issues).
+        
+        The selected_backend parameter is respected to allow CPU_ATTN override.
+        """
+        # If a specific backend was selected, respect it
+        if selected_backend is not None:
+            from vllm.v1.attention.backends.registry import AttentionBackendEnum
+            try:
+                backend_enum = AttentionBackendEnum[selected_backend.upper()]
+                return backend_enum.get_path()
+            except (KeyError, ValueError):
+                logger.warning(f"Unknown backend {selected_backend}, falling back to CPU_ATTN")
+        
+        # Default to CPU attention for Vulkan stability
+        # flex_attention uses CUDA-specific ops that don't work with Vulkan
+        return "vllm.v1.attention.backends.cpu_attn.CPUAttentionBackend"
     
     @classmethod
     def get_worker_cls(cls, vllm_config, local_rank: int, rank: int, distributed_init_method: str, is_driver_worker: bool = False):
@@ -51,6 +60,15 @@ class VulkanPlatform(Platform):
     def get_model_runner_cls(cls, vllm_config):
         """Force GPUModelRunner for Vulkan platform to enable GPU acceleration."""
         return "vllm.v1.worker.gpu_model_runner.GPUModelRunner"
+    
+    @classmethod
+    def is_pin_memory_available(cls) -> bool:
+        """Vulkan on Asahi Linux does not support pinned memory.
+        
+        Pinning memory requires CUDA or other accelerator backends.
+        Vulkan on Asahi (Apple Silicon on Linux) lacks this capability.
+        """
+        return False
     
     def set_device(self, device: torch.device) -> None:
         """Set the Vulkan device for computation."""

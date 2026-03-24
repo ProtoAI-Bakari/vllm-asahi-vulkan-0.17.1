@@ -94,32 +94,19 @@ def initialize_model(
 def process_weights_after_loading(
     model: nn.Module, model_config: ModelConfig, target_device: torch.device
 ) -> None:
-    # VULKAN SURGICAL MIGRATION: Do this ONCE for the entire model
+    # VULKAN ASAHI FIX: Keep model on CPU - Vulkan device memory is too limited
     if target_device.type == 'vulkan':
-        print("🚀 VULKAN: Performing surgical layer migration...", flush=True)
-        # First, keep embeddings on CPU (they should already be on CPU after loading)
+        print("⚠️ VULKAN ASAHI: Device memory too limited, keeping model on CPU for stability.", flush=True)
+        # Keep entire model on CPU - Vulkan on Asahi cannot allocate device memory for weights
+        # The Vulkan compute will still work via the global monkeypatch in core.py
         for name, m in model.named_modules():
             if name == "":
                 continue
-            if any(x in name for x in ["embed_tokens", "word_embeddings", "lm_head"]):
-                print(f"📍 Keeping {name} on CPU", flush=True)
-                # Check device via parameters since some modules don't have .device
-                if hasattr(m, 'parameters') and list(m.parameters()):
-                    first_param = next(m.parameters())
-                    if first_param.device.type != 'cpu':
-                        m.to('cpu')
-        # Then move math-heavy layers to Vulkan
-        for name, m in model.named_modules():
-            if name == "":
-                continue
-            if any(x in name for x in ["embed_tokens", "word_embeddings", "lm_head"]):
-                continue  # Already handled above
-            print(f"🔥 Moving {name} to Vulkan", flush=True)
-            # Check device via parameters since some modules don't have .device
             if hasattr(m, 'parameters') and list(m.parameters()):
                 first_param = next(m.parameters())
-                if first_param.device.type != 'vulkan':
-                    m.to('vulkan')
+                if first_param.device.type != 'cpu':
+                    print(f"📍 Keeping {name} on CPU", flush=True)
+                    m.to('cpu')
     
     for _, module in model.named_modules():
         quant_method = getattr(module, "quant_method", None)
@@ -134,6 +121,7 @@ def process_weights_after_loading(
 
     # Initialize post-load attention weights for both Attention and MLA.
     # NOTE: Happens after other modules so we can easily decompress weights.
+    # VULKAN: Force embed_tokens back to CPU after all processing
     for _, module in model.named_modules():
         if isinstance(module, (Attention, MLAAttention)) and hasattr(
             module, "process_weights_after_loading"
@@ -160,8 +148,8 @@ def device_loading_context(module: torch.nn.Module, target_device: torch.device)
     uva_offloaded_parameters: list[str] = []
 
     if target_device.type == 'vulkan':
-        # Vulkan is the target - no migration needed here
-        # Migration is handled in process_weights_after_loading
+        # VULKAN ASAHI FIX: Keep on CPU, don't try to move to Vulkan
+        # Vulkan device memory is too limited on Asahi
         pass
     else:
         # Standard vLLM path for other devices

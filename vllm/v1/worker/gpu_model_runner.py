@@ -221,7 +221,9 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
         self._invalid_req_indices = invalid_req_indices
 
         # Event on the copy stream so we can synchronize the non-blocking copy.
-        self.async_copy_ready_event = torch.Event()
+        # Only create event for CUDA (Vulkan/CPU don't support torch.Event)
+        is_vulkan = os.environ.get('VLLM_PLATFORM') == 'vulkan'
+        self.async_copy_ready_event = None if is_vulkan else torch.Event()
 
         # Keep a reference to the device tensor to avoid it being
         # deallocated until we finish copying it to the host.
@@ -230,21 +232,26 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
         self._logprobs_tensors = logprobs_tensors
 
         # Initiate the copy on a separate stream, but do not synchronize it.
-        default_stream = torch.cuda.current_stream()
-        if async_output_copy_stream is not None:
+        # Only get CUDA stream if not using Vulkan (Vulkan doesn't have CUDA streams)
+        is_vulkan = os.environ.get('VLLM_PLATFORM') == 'vulkan'
+        default_stream = None if is_vulkan else torch.cuda.current_stream()
+        
+        # Always create sampled_token_ids_cpu, even on Vulkan
+        self.sampled_token_ids_cpu = self._sampled_token_ids.to(
+            "cpu", non_blocking=True
+        )
+        self._logprobs_tensors_cpu = (
+            self._logprobs_tensors.to_cpu_nonblocking()
+            if self._logprobs_tensors
+            else None
+        )
+        
+        # Use async stream only for CUDA (not Vulkan)
+        # Only record event if it exists (CUDA only)
+        if async_output_copy_stream is not None and not is_vulkan and self.async_copy_ready_event is not None:
             with torch.cuda.stream(async_output_copy_stream):
-                if os.environ.get('VLLM_PLATFORM') != 'vulkan':
-                    async_output_copy_stream.wait_stream(default_stream)
-            self.sampled_token_ids_cpu = self._sampled_token_ids.to(
-                "cpu", non_blocking=True
-            )
-            self._logprobs_tensors_cpu = (
-                self._logprobs_tensors.to_cpu_nonblocking()
-                if self._logprobs_tensors
-                else None
-            )
-            if os.environ.get('VLLM_PLATFORM') != 'vulkan':
-                self.async_copy_ready_event.record()
+                async_output_copy_stream.wait_stream(default_stream)
+            self.async_copy_ready_event.record()
 
     def get_output(self) -> ModelRunnerOutput:
         """Copy the device tensors to the host and return a ModelRunnerOutput.
@@ -252,7 +259,9 @@ class AsyncGPUModelRunnerOutput(AsyncModelRunnerOutput):
         This function blocks until the copy is finished.
         """
         max_gen_len = self.sampled_token_ids_cpu.shape[-1]
-        self.async_copy_ready_event.synchronize()
+        # Only synchronize if event exists (CUDA only)
+        if self.async_copy_ready_event is not None:
+            self.async_copy_ready_event.synchronize()
 
         # Release the device tensors once the copy has completed.
         del self._logprobs_tensors
@@ -334,17 +343,21 @@ class AsyncGPUPoolingModelRunnerOutput(AsyncModelRunnerOutput):
         self._model_runner_output = model_runner_output
 
         # Event on the copy stream so we can synchronize the non-blocking copy.
-        self.async_copy_ready_event = torch.Event()
+        # Only create event for CUDA (Vulkan/CPU don't support torch.Event)
+        is_vulkan = os.environ.get('VLLM_PLATFORM') == 'vulkan'
+        self.async_copy_ready_event = None if is_vulkan else torch.Event()
 
         # Keep a reference to the device tensors to avoid them being
         # deallocated until we finish copying it to the host.
         self._raw_pooler_output = raw_pooler_output
 
         # Initiate the copy on a separate stream, but do not synchronize it.
-        default_stream = torch.cuda.current_stream()
+        # Only get CUDA stream if not using Vulkan (Vulkan doesn't have CUDA streams)
+        is_vulkan = os.environ.get('VLLM_PLATFORM') == 'vulkan'
+        default_stream = None if is_vulkan else torch.cuda.current_stream()
         if async_output_copy_stream is not None:
             with torch.cuda.stream(async_output_copy_stream):
-                if os.environ.get('VLLM_PLATFORM') != 'vulkan':
+                if not is_vulkan:
                     async_output_copy_stream.wait_stream(default_stream)
             self._model_runner_output.pooler_output = _copy_pooler_output_to_cpu(
                 raw_pooler_output=self._raw_pooler_output,
@@ -2310,15 +2323,18 @@ class GPUModelRunner(
         cu_num_sampled_tokens = torch.from_numpy(cu_num_sampled_tokens).to(
             self.device, non_blocking=True
         )
+        # VULKAN: Cast to int32 for Vulkan compatibility
         logits_indices = torch.from_numpy(logits_indices).to(
             self.device, non_blocking=True
-        )
+        ).to(torch.int32)
+        # VULKAN: Cast to int32 for Vulkan compatibility
         target_logits_indices = torch.from_numpy(target_logits_indices).to(
             self.device, non_blocking=True
-        )
+        ).to(torch.int32)
+        # VULKAN: Cast to int32 for Vulkan compatibility
         bonus_logits_indices = torch.from_numpy(bonus_logits_indices).to(
             self.device, non_blocking=True
-        )
+        ).to(torch.int32)
 
         # Compute the draft token ids.
         # draft_token_indices:      [  1,   2,   3, 105, 106, 208]
