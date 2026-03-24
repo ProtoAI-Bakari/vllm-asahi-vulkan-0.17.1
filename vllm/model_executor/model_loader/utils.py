@@ -97,14 +97,22 @@ def process_weights_after_loading(
     # VULKAN ASAHI FIX: Keep model on CPU - Vulkan device memory is too limited
     
     if target_device.type == 'vulkan':
-        print("🚀 VULKAN GPU ENGAGEMENT: Forcing Math to Shaders...")
+        print("🚀 VULKAN GPU ENGAGEMENT: Aggressive CPU Offload for Stability...")
         for name, m in model.named_modules():
-            if any(x in name for x in ["embed_tokens", "lm_head", "word_embeddings"]):
+            # Keep these on CPU - they don't need GPU acceleration
+            if any(x in name for x in ["embed_tokens", "lm_head", "word_embeddings", 
+                                        "norm", "layernorm", "layer_norm",
+                                        "fc1", "fc2", "mlp"]):
                 print(f"📍 Pinned to CPU: {name}")
                 m.to('cpu')
             elif hasattr(m, 'weight'):
-                # Force math layers to GPU
-                m.to('vulkan')
+                # Only attention layers go to Vulkan
+                if any(x in name for x in ["self_attn", "q_proj", "k_proj", "v_proj", "o_proj"]):
+                    print(f"🚀 Vulkan: {name}")
+                    m.to('vulkan')
+                else:
+                    print(f"📍 Pinned to CPU (non-attention): {name}")
+                    m.to('cpu')
 
     
     for _, module in model.named_modules():
