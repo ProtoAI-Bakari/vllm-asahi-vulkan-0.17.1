@@ -30,39 +30,38 @@ from vllm.tracing import instrument, maybe_init_worker_tracer
 from vllm.transformers_utils.config import maybe_register_config_serialize_by_value
 
 import torch
+
+# VULKAN ASAHI FIX: dtype shield for Vulkan device transfers
+import os
 if os.environ.get('VLLM_PLATFORM') == 'vulkan':
-    # 1. Scalar Shield: Force all integer transfers to int32 (FIXED RECURSION)
-    # Save the original unpatched method
-    # Handle PyTorch 2.10+ where Tensor.to is a method_descriptor without __func__
-    if hasattr(torch.Tensor.to, '__func__'):
-        _orig_to = torch.Tensor.to.__func__
-    else:
-        _orig_to = torch.Tensor.to
-    def _vulkan_to(self, *args, **kwargs):
-        # Check if already int32 to avoid recursion
-        if self.dtype == torch.int64:
-            # Convert to int32 first, then apply original to
-            int32_tensor = _orig_to(self, torch.int32)
-            return _orig_to(int32_tensor, *args, **kwargs)
+    _orig_to = torch.Tensor.to
+    
+    def _vulkan_shield_to(self, *args, **kwargs):
+        device = kwargs.get('device') or (args[0] if args else None)
+        dtype = kwargs.get('dtype') or (args[1] if len(args) > 1 else None)
+        
+        # If moving to Vulkan, enforce float32 dtype
+        if device and 'vulkan' in str(device):
+            # Handle forbidden types
+            if self.dtype == torch.int64:
+                # Vulkan only supports int32 for metadata
+                self = self.to(torch.int32)
+            elif self.dtype == torch.bool:
+                self = self.to(torch.int32)
+            elif self.dtype == torch.float16 or self.dtype == torch.half:
+                # Vulkan FP16 shader missing - force float32
+                self = self.to(torch.float32)
+            # bfloat16 is kept as-is but may not work on all Vulkan implementations
+            
+            # Remove dtype from kwargs if we've already converted
+            if dtype is not None:
+                kwargs.pop('dtype', None)
+        
         return _orig_to(self, *args, **kwargs)
-    torch.Tensor.to = _vulkan_to
     
-    # 2. Kernel Bridge: Fallback for missing Vulkan kernels (as_strided)
-    # Handle PyTorch 2.10+ where Tensor.as_strided is a method_descriptor
-    if hasattr(torch.Tensor.as_strided, '__func__'):
-        _orig_as_strided = torch.Tensor.as_strided.__func__
-    else:
-        _orig_as_strided = torch.Tensor.as_strided
-    def _vulkan_as_strided(self, size, stride, storage_offset=0):
-        try:
-            return _orig_as_strided(self, size, stride, storage_offset)
-        except NotImplementedError:
-            # Fallback: move to CPU, perform operation, return
-            cpu_tensor = self.cpu()
-            return _orig_as_strided(cpu_tensor, size, stride, storage_offset)
-    torch.Tensor.as_strided = _vulkan_as_strided
-    
-    print("⚠️ VULKAN BRIDGE: Global Scalar and Kernel Shield Active (v4 - Recursion Fixed)")
+    torch.Tensor.to = _vulkan_shield_to
+    print("⚠️ VULKAN BRIDGE v6: Full dtype Shield (int64/bool/fp16->fp32) Active")
+
 
 
 

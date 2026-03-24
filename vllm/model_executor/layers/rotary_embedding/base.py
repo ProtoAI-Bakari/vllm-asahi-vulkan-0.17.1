@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Rotary Positional Embeddings Base Class."""
 
+import os
 import torch
 
 from vllm._aiter_ops import rocm_aiter_ops
@@ -149,13 +150,24 @@ class RotaryEmbedding(RotaryEmbeddingBase):
         """A PyTorch-native implementation of forward()."""
         positions = positions.flatten()
         num_tokens = positions.shape[0]
-        cos_sin = cos_sin_cache.index_select(0, positions)
+        # Vulkan fallback: index_select not supported, use gather on CPU
+        if os.environ.get('VLLM_PLATFORM') == 'vulkan':
+            cos_sin = cos_sin_cache.cpu().index_select(0, positions.cpu()).to(cos_sin_cache.device)
+        else:
+            cos_sin = cos_sin_cache.index_select(0, positions)
         cos, sin = cos_sin.chunk(2, dim=-1)
 
         query_shape = query.shape
         query = query.view(num_tokens, -1, head_size)
-        query_rot = query[..., :rotary_dim]
-        query_pass = query[..., rotary_dim:]
+        # VULKAN SHIELD: Use CPU fallback for split (as_strided not supported)
+        if os.environ.get('VLLM_PLATFORM') == 'vulkan':
+            query_cpu = query.cpu()
+            query_parts = torch.split(query_cpu, [rotary_dim, head_size - rotary_dim], dim=-1)
+            query_rot = query_parts[0].to(query.device)
+            query_pass = query_parts[1].to(query.device)
+        else:
+            query_rot = query[..., :rotary_dim]
+            query_pass = query[..., rotary_dim:]
         query_rot = ApplyRotaryEmb.forward_static(
             query_rot,
             cos,
@@ -168,8 +180,15 @@ class RotaryEmbedding(RotaryEmbeddingBase):
         if key is not None:
             key_shape = key.shape
             key = key.view(num_tokens, -1, head_size)
-            key_rot = key[..., :rotary_dim]
-            key_pass = key[..., rotary_dim:]
+            # VULKAN SHIELD: Use CPU fallback for split (as_strided not supported)
+            if os.environ.get('VLLM_PLATFORM') == 'vulkan':
+                key_cpu = key.cpu()
+                key_parts = torch.split(key_cpu, [rotary_dim, head_size - rotary_dim], dim=-1)
+                key_rot = key_parts[0].to(key.device)
+                key_pass = key_parts[1].to(key.device)
+            else:
+                key_rot = key[..., :rotary_dim]
+                key_pass = key[..., rotary_dim:]
             key_rot = ApplyRotaryEmb.forward_static(
                 key_rot,
                 cos,

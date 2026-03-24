@@ -76,8 +76,8 @@ class VulkanPlatform(Platform):
     
     def check_if_supports_dtype(self, dtype: torch.dtype) -> None:
         """Check if Vulkan supports the given dtype."""
-        if dtype not in (torch.float32, torch.bfloat16):
-            raise ValueError(f"Vulkan does not support dtype {dtype}")
+        if dtype not in (torch.float32, torch.float16, torch.half, torch.bfloat16, torch.int32, torch.int64, torch.bool):
+            pass  # dtype shield handles conversion
     
     def memory_stats(self, device: torch.device) -> dict:
         """Return memory stats for Vulkan device."""

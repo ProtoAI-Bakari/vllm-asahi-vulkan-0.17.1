@@ -95,18 +95,17 @@ def process_weights_after_loading(
     model: nn.Module, model_config: ModelConfig, target_device: torch.device
 ) -> None:
     # VULKAN ASAHI FIX: Keep model on CPU - Vulkan device memory is too limited
+    
     if target_device.type == 'vulkan':
-        print("⚠️ VULKAN ASAHI: Device memory too limited, keeping model on CPU for stability.", flush=True)
-        # Keep entire model on CPU - Vulkan on Asahi cannot allocate device memory for weights
-        # The Vulkan compute will still work via the global monkeypatch in core.py
+        print("🚀 VULKAN GPU ENGAGEMENT: Forcing Math to Shaders...")
         for name, m in model.named_modules():
-            if name == "":
-                continue
-            if hasattr(m, 'parameters') and list(m.parameters()):
-                first_param = next(m.parameters())
-                if first_param.device.type != 'cpu':
-                    print(f"📍 Keeping {name} on CPU", flush=True)
-                    m.to('cpu')
+            if any(x in name for x in ["embed_tokens", "lm_head", "word_embeddings"]):
+                print(f"📍 Pinned to CPU: {name}")
+                m.to('cpu')
+            elif hasattr(m, 'weight'):
+                # Force math layers to GPU
+                m.to('vulkan')
+
     
     for _, module in model.named_modules():
         quant_method = getattr(module, "quant_method", None)

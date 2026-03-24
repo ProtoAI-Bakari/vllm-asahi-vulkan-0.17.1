@@ -25,6 +25,7 @@
 # limitations under the License.
 """Inference-only Qwen2 model compatible with HuggingFace weights."""
 
+import os
 from collections.abc import Iterable
 from itertools import islice
 from typing import Any
@@ -206,7 +207,13 @@ class Qwen2Attention(nn.Module):
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         qkv, _ = self.qkv_proj(hidden_states)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        # Vulkan-compatible split using slicing (as_strided not supported on Vulkan)
+        if os.environ.get('VLLM_PLATFORM') == 'vulkan':
+            q = qkv[..., :self.q_size]
+            k = qkv[..., self.q_size:self.q_size + self.kv_size]
+            v = qkv[..., self.q_size + self.kv_size:self.q_size + 2 * self.kv_size]
+        else:
+            q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
         # Apply QK normalization if enabled (before RoPE)
         if self.qk_norm:
