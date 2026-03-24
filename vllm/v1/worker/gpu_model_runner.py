@@ -1500,12 +1500,13 @@ class GPUModelRunner(
         prev_common_req_indices_tensor = torch.tensor(
             prev_common_req_indices, dtype=torch.int64, pin_memory=self.pin_memory
         ).to(self.device, non_blocking=True)
+        # VULKAN FIX: Ensure indices are on CPU when indexing CPU tensors
+        cpu_indices = prev_common_req_indices_tensor.cpu() if prev_common_req_indices_tensor.device.type != 'cpu' else prev_common_req_indices_tensor
+        src_tensor = self.input_batch.prev_sampled_token_ids[cpu_indices, 0]
         self.input_ids.gpu.scatter_(
             dim=0,
             index=sampled_tokens_index_tensor,
-            src=self.input_batch.prev_sampled_token_ids[
-                prev_common_req_indices_tensor, 0
-            ],
+            src=src_tensor,
         )
 
         # Scatter the draft tokens after the sampled tokens are scattered.
