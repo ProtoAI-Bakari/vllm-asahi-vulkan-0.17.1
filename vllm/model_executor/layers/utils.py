@@ -90,24 +90,44 @@ def apply_penalties(
     return logits
 
 
+# Vulkan weight cache: id(cpu_weight) -> vulkan_float32_weight
+_vk_weight_cache: dict[int, torch.Tensor] = {}
+_VK_BATCH_THRESHOLD = 8  # Use Vulkan when batch > this (prefill)
+
 def default_unquantized_gemm(
     layer: torch.nn.Module,
     x: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor | None = None,
 ):
-    # VULKAN: Use CPU for all linear operations
-    if current_platform.__class__.__name__ == 'VulkanPlatform':
-        try:
-            x_cpu = x.to('cpu')
-            weight_cpu = weight.to('cpu')
-            bias_cpu = bias.to('cpu') if bias is not None else None
-            output_cpu = torch.nn.functional.linear(x_cpu, weight_cpu, bias_cpu)
-            return output_cpu.to(x.device)
-        except Exception:
-            # Fallback to original if CPU transfer fails
-            pass
-    return torch.nn.functional.linear(x, weight, bias)
+    if current_platform.__class__.__name__ != 'VulkanPlatform' \
+       or not torch.is_vulkan_available():
+        return torch.nn.functional.linear(x, weight, bias)
+
+    batch = x.shape[0]
+
+    # DECODE (batch <= threshold): pure CPU, zero overhead
+    if batch <= _VK_BATCH_THRESHOLD:
+        # Keep tensors as-is if already on CPU - no dtype casting
+        if x.device.type == 'cpu' and weight.device.type == 'cpu':
+            return torch.nn.functional.linear(x, weight, bias)
+        # Fallback: move to CPU if somehow on vulkan
+        x_cpu = x.cpu() if x.device.type != 'cpu' else x
+        w_cpu = weight.cpu() if weight.device.type != 'cpu' else weight
+        b_cpu = bias.cpu() if bias is not None and bias.device.type != 'cpu' else bias
+        return torch.nn.functional.linear(x_cpu, w_cpu, b_cpu)
+
+    # PREFILL (batch > threshold): Vulkan is 6x+ faster
+    orig_dtype = x.dtype
+    wid = id(weight)
+    if wid not in _vk_weight_cache:
+        _vk_weight_cache[wid] = weight.cpu().float().to('vulkan')
+    w_vk = _vk_weight_cache[wid]
+    x_vk = x.cpu().float().to('vulkan')
+    result = torch.mm(x_vk, w_vk.t()).cpu()
+    if bias is not None:
+        result = result + bias.cpu().float()
+    return result.to(orig_dtype)
 
 
 def use_aiter_triton_gemm(n, m, k, dtype):

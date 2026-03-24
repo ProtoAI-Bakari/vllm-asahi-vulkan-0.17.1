@@ -45,13 +45,15 @@ if os.environ.get('VLLM_PLATFORM') == 'vulkan':
         if device and 'vulkan' in str(device):
             # ✅ NATIVE FP16 SUPPORT ENABLED (PyTorch C++ rebuild complete)
             # Only convert truly unsupported types, keep float16/native dtypes
-            if self.dtype in (torch.int64, torch.bool):
-                # Vulkan metadata needs int32, bool not supported
-                self = _orig_vulkan_to(self, torch.int32)
-            elif self.dtype not in (torch.float32, torch.float16, torch.half, torch.bfloat16, torch.int32):
-                # Convert unknown types to float32 as fallback
+            if not self.dtype.is_floating_point:
+                # Integer/bool tensors CANNOT go to Vulkan - keep on CPU
+                if self.dtype in (torch.int64, torch.bool):
+                    return _orig_vulkan_to(self, torch.int32)
+                return self  # already int32/int16/int8, just don't move to vulkan
+            elif self.dtype != torch.float32:
+                # Vulkan ONLY supports float32 - convert everything else
+                # (fp16, bf16, fp64 all need float32)
                 self = _orig_vulkan_to(self, torch.float32)
-            # float16/half, bfloat16, float32, int32 pass through unchanged
             
             # Remove dtype from kwargs - we've already converted
             kwargs.pop('dtype', None)
