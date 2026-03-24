@@ -31,7 +31,7 @@ from vllm.transformers_utils.config import maybe_register_config_serialize_by_va
 
 import torch
 
-# VULKAN ASAHI FIX: dtype shield for Vulkan device transfers
+# VULKAN ASAHI FIX: AGGRESSIVE dtype shield - Vulkan ONLY supports float32
 import os
 if os.environ.get('VLLM_PLATFORM') == 'vulkan':
     # Save original to method BEFORE any patching
@@ -39,28 +39,29 @@ if os.environ.get('VLLM_PLATFORM') == 'vulkan':
     
     def _vulkan_shield_to(self, *args, **kwargs):
         device = kwargs.get('device') or (args[0] if args else None)
+        dtype_arg = kwargs.get('dtype')
         
-        # If moving TO Vulkan, enforce float32 dtype FIRST
+        # If moving TO Vulkan, FORCE float32 for ALL tensors
         if device and 'vulkan' in str(device):
-            # Convert self to float32 if needed BEFORE calling original to()
-            if self.dtype == torch.int64:
-                self = _orig_vulkan_to(self, torch.int32)
-            elif self.dtype == torch.bool:
-                self = _orig_vulkan_to(self, torch.int32)
-            elif self.dtype == torch.float16 or self.dtype == torch.half:
+            # AGGRESSIVE: Convert ANY non-float32 dtype to float32
+            if self.dtype != torch.float32:
+                # Log conversion for debugging
+                if self.dtype not in (torch.int32, torch.int64, torch.bool, torch.float16, torch.half, torch.bfloat16):
+                    pass  # Silent for common types
                 self = _orig_vulkan_to(self, torch.float32)
             
-            # Now call original to() with device only (no dtype to avoid conflict)
+            # Remove dtype from kwargs - we've already converted
             kwargs.pop('dtype', None)
-            if len(args) > 1:
+            if len(args) > 1 and isinstance(args[1], torch.dtype):
                 args = (args[0],)  # Remove dtype from args
+            
             return _orig_vulkan_to(self, *args, **kwargs)
         
         # For non-vulkan devices, use normal to()
         return _orig_vulkan_to(self, *args, **kwargs)
     
     torch.Tensor.to = _vulkan_shield_to
-    print("⚠️ VULKAN BRIDGE v7: Pre-convert Shield (dtype->fp32 BEFORE to()) Active")
+    print("⚠️ VULKAN BRIDGE v8: AGGRESSIVE float32-ONLY Shield Active")
 
 
 
