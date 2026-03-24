@@ -41,14 +41,17 @@ if os.environ.get('VLLM_PLATFORM') == 'vulkan':
         device = kwargs.get('device') or (args[0] if args else None)
         dtype_arg = kwargs.get('dtype')
         
-        # If moving TO Vulkan, FORCE float32 for ALL tensors
+        # If moving TO Vulkan, allow native dtypes (FP16 NOW SUPPORTED!)
         if device and 'vulkan' in str(device):
-            # AGGRESSIVE: Convert ANY non-float32 dtype to float32
-            if self.dtype != torch.float32:
-                # Log conversion for debugging
-                if self.dtype not in (torch.int32, torch.int64, torch.bool, torch.float16, torch.half, torch.bfloat16):
-                    pass  # Silent for common types
+            # ✅ NATIVE FP16 SUPPORT ENABLED (PyTorch C++ rebuild complete)
+            # Only convert truly unsupported types, keep float16/native dtypes
+            if self.dtype in (torch.int64, torch.bool):
+                # Vulkan metadata needs int32, bool not supported
+                self = _orig_vulkan_to(self, torch.int32)
+            elif self.dtype not in (torch.float32, torch.float16, torch.half, torch.bfloat16, torch.int32):
+                # Convert unknown types to float32 as fallback
                 self = _orig_vulkan_to(self, torch.float32)
+            # float16/half, bfloat16, float32, int32 pass through unchanged
             
             # Remove dtype from kwargs - we've already converted
             kwargs.pop('dtype', None)
@@ -61,7 +64,7 @@ if os.environ.get('VLLM_PLATFORM') == 'vulkan':
         return _orig_vulkan_to(self, *args, **kwargs)
     
     torch.Tensor.to = _vulkan_shield_to
-    print("⚠️ VULKAN BRIDGE v8: AGGRESSIVE float32-ONLY Shield Active")
+    print("✅ VULKAN BRIDGE v9: NATIVE FP16 SUPPORT ENABLED")
 
 
 
