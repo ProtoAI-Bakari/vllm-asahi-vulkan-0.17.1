@@ -94,25 +94,13 @@ def initialize_model(
 def process_weights_after_loading(
     model: nn.Module, model_config: ModelConfig, target_device: torch.device
 ) -> None:
-    # VULKAN ASAHI FIX: Layer offloading with native FP16 support (50% memory savings!)
-    
+    # ✅ FULL GPU RESIDENCY - Everything on Vulkan!
+    # No CPU offloading - eliminates ping-pong latency
     if target_device.type == 'vulkan':
-        print("🚀 VULKAN GPU ENGAGEMENT: FP16 Native Support Enabled - Optimized Layer Offload...")
-        for name, m in model.named_modules():
-            # Keep these on CPU - they don't need GPU acceleration
-            if any(x in name for x in ["embed_tokens", "lm_head", "word_embeddings", 
-                                        "norm", "layernorm", "layer_norm",
-                                        "fc1", "fc2", "mlp"]):
-                print(f"📍 Pinned to CPU: {name}")
-                m.to('cpu')
-            elif hasattr(m, 'weight'):
-                # Only attention layers go to Vulkan
-                if any(x in name for x in ["self_attn", "q_proj", "k_proj", "v_proj", "o_proj"]):
-                    print(f"🚀 Vulkan: {name}")
-                    m.to('vulkan')
-                else:
-                    print(f"📍 Pinned to CPU (non-attention): {name}")
-                    m.to('cpu')
+        print("🚀 VULKAN FULL GPU RESIDENCY: All layers on Vulkan - Zero CPU offloading!")
+        # Let PyTorch handle device placement normally
+        # The target_device is already 'vulkan', so model.to(target_device) will work
+        # We just need to ensure no modules are explicitly moved to CPU
 
     
     for _, module in model.named_modules():

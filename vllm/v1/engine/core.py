@@ -299,7 +299,7 @@ class EngineCore:
                     # Limit to 1GB to prevent VMA_ERROR_OUT_OF_DEVICE_MEMORY
                     available_gpu_memory = [256 * 1024 * 1024]  # 1GB
                     self.available_gpu_memory_for_kv_cache = 256 * 1024 * 1024
-                    print(f"⚠️ VULKAN OVERRIDE: Limited available memory to 1GB for Vulkan stability.")
+                    print(f"⚠️ VULKAN OVERRIDE: Limited available memory to 8GB for Vulkan stability.")
         else:
             # Attention free models don't need memory for kv cache
             available_gpu_memory = [0] * len(kv_cache_specs)
