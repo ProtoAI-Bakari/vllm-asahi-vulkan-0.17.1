@@ -106,6 +106,8 @@ class Qwen2MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     _vk_count = 0
+    _vk_batch_threshold = int(os.environ.get('VLLM_VK_BATCH_THRESHOLD', '4'))
+
     def forward(self, x):
         if (x.shape[0] > 0 and os.environ.get('VLLM_PLATFORM') == 'vulkan'
                 and torch.is_vulkan_available()
@@ -117,26 +119,34 @@ class Qwen2MLP(nn.Module):
         return x
 
     def _vulkan_mlp(self, x):
-        """GPU MLP: matmuls on Vulkan. Splits gate_up if > 16000 rows."""
+        """GPU MLP: Vulkan for prefill (batch>threshold), CPU for decode."""
         dt = x.dtype
         if not hasattr(self, '_vk_initialized'):
             Qwen2MLP._vk_count += 1
             w = self.gate_up_proj.weight.data.cpu().float()
             half = w.shape[0] // 2
             if w.shape[0] > 16000:
-                # Split: gate and up separately (avoids Vulkan image row limit)
                 self._vk_gate_w = w[:half].to('vulkan')
                 self._vk_up_w = w[half:].to('vulkan')
                 self._vk_split = True
             else:
-                # Single combined matmul
                 self._vguw = w.to('vulkan')
                 self._vk_split = False
             self._vdw = self.down_proj.weight.data.cpu().float().to('vulkan')
+            # Keep CPU copies for fast decode path
+            self._cpu_gate_up_w = self.gate_up_proj.weight.data.cpu()
+            self._cpu_down_w = self.down_proj.weight.data.cpu()
             self._vk_initialized = True
 
-        xv = x.cpu().float().contiguous().to('vulkan')
+        # Decode (batch<=threshold): CPU is 14x faster
+        if x.shape[0] <= Qwen2MLP._vk_batch_threshold:
+            gu = torch.nn.functional.linear(x.cpu().to(self._cpu_gate_up_w.dtype), self._cpu_gate_up_w)
+            d = gu.shape[-1] // 2
+            act = torch.nn.functional.silu(gu[..., :d]) * gu[..., d:]
+            return torch.nn.functional.linear(act, self._cpu_down_w).to(dt)
 
+        # Prefill (batch>threshold): Vulkan GPU
+        xv = x.cpu().float().contiguous().to('vulkan')
         if self._vk_split:
             gate = torch.mm(xv, self._vk_gate_w.t()).cpu()
             up = torch.mm(xv, self._vk_up_w.t()).cpu()
@@ -145,7 +155,6 @@ class Qwen2MLP(nn.Module):
             d = gu.shape[-1] // 2
             gate, up = gu[..., :d], gu[..., d:]
 
-        # SiluAndMul on CPU (avoids exp overflow on Vulkan)
         act = torch.nn.functional.silu(gate) * up
         return torch.mm(act.to('vulkan'), self._vdw.t()).cpu().to(dt)
 
