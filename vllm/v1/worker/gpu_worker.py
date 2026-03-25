@@ -361,6 +361,15 @@ class Worker(WorkerBase):
         print(">>> WORKER: load_model COMPLETE", file=sys.stderr, flush=True)
         print(">>> WORKER: load_model COMPLETE", file=sys.stderr)
 
+        # GGML Vulkan backend: replace model forward with ggml engine
+        gguf_path = os.environ.get('VLLM_GGUF_MODEL')
+        if gguf_path and os.environ.get('VLLM_USE_GGML') == '1':
+            sys.path.insert(0, os.path.expanduser('~/AGENT'))
+            from ggml_model_wrapper import patch_vllm_model_runner
+            n_ctx = self.vllm_config.model_config.max_model_len or 2048
+            patch_vllm_model_runner(self.model_runner, gguf_path, n_ctx=n_ctx)
+            print(f">>> WORKER: ggml backend active ({gguf_path})", file=sys.stderr)
+
     def update_config(self, overrides: dict[str, Any]) -> None:
         self.model_runner.update_config(overrides)
 
