@@ -105,11 +105,31 @@ class Qwen2MLP(nn.Module):
             )
         self.act_fn = SiluAndMul()
 
+    _vk_count = 0
     def forward(self, x):
+        if (x.shape[0] > 8 and os.environ.get('VLLM_PLATFORM') == 'vulkan'
+                and torch.is_vulkan_available()
+                and Qwen2MLP._vk_count < 24):
+            return self._vulkan_mlp(x)
         gate_up, _ = self.gate_up_proj(x)
         x = self.act_fn(gate_up)
         x, _ = self.down_proj(x)
         return x
+
+    def _vulkan_mlp(self, x):
+        """GPU MLP: 3 matmuls on Vulkan with 2 transfers (in/out)."""
+        dt = x.dtype
+        if not hasattr(self, '_vguw'):
+            Qwen2MLP._vk_count += 1
+            self._vguw = self.gate_up_proj.weight.data.cpu().float().to('vulkan')
+            self._vdw = self.down_proj.weight.data.cpu().float().to('vulkan')
+        xv = x.cpu().float().contiguous().to('vulkan')
+        gu = torch.mm(xv, self._vguw.t())
+        d = gu.shape[-1] // 2
+        a, b = gu[..., :d], gu[..., d:]
+        ea = torch.exp(a)
+        act = (a * (ea / (ea + 1.0))) * b
+        return torch.mm(act, self._vdw.t()).cpu().to(dt)
 
 
 class Qwen2Attention(nn.Module):
