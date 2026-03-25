@@ -294,14 +294,14 @@ class EngineCore:
                 # much memory can be allocated for kv cache.
                 available_gpu_memory = self.model_executor.determine_available_memory()
                 self.available_gpu_memory_for_kv_cache = available_gpu_memory[0]
-                # VULKAN ASAHI LOBOTOMY: Stop the greed - limit available memory for Vulkan
+                # VULKAN ASAHI: Limit KV cache memory to avoid OOM
+                # Vulkan device memory is ~2.6GB usable, MLP weights take most of it
                 from vllm.platforms import current_platform
-        if current_platform.device_type == "vulkan":
-                    # Vulkan on Asahi has limited device-local memory (~15GB shared)
-                    # Limit to 1GB to prevent VMA_ERROR_OUT_OF_DEVICE_MEMORY
-                    available_gpu_memory = [256 * 1024 * 1024]  # 1GB
+                if current_platform.device_type == "vulkan":
+                    # KV cache stays on CPU for Vulkan - just need minimal allocation
+                    available_gpu_memory = [256 * 1024 * 1024]  # 256MB for KV
                     self.available_gpu_memory_for_kv_cache = 256 * 1024 * 1024
-                    print(f"⚠️ VULKAN OVERRIDE: Limited available memory to 8GB for Vulkan stability.")
+                    print(f"VULKAN: KV cache memory limited to 256MB")
         else:
             # Attention free models don't need memory for kv cache
             available_gpu_memory = [0] * len(kv_cache_specs)

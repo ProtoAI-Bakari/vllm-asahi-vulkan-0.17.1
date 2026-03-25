@@ -92,7 +92,7 @@ def apply_penalties(
 
 # Vulkan weight cache: id(cpu_weight) -> vulkan_float32_weight
 _vk_weight_cache: dict[int, torch.Tensor] = {}
-_VK_BATCH_THRESHOLD = 8  # Use Vulkan when batch > this (prefill)
+_VK_BATCH_THRESHOLD = 999999  # Disabled: MLP handled by model-level _vulkan_mlp, non-MLP stays CPU
 
 def default_unquantized_gemm(
     layer: torch.nn.Module,

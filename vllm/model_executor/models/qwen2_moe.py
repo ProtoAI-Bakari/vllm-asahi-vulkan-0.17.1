@@ -25,6 +25,7 @@
 # limitations under the License.
 """Inference-only Qwen2MoE model compatible with HuggingFace weights."""
 
+import os
 from collections.abc import Iterable
 from itertools import islice
 from typing import Any
@@ -105,10 +106,54 @@ class Qwen2MoeMLP(nn.Module):
         self.act_fn = SiluAndMul()
         self.expert_gate = expert_gate
 
+    _vk_count = 0
     def forward(self, x):
+        if (x.shape[0] > 0 and os.environ.get('VLLM_PLATFORM') == 'vulkan'
+                and torch.is_vulkan_available()
+                and Qwen2MoeMLP._vk_count < int(os.environ.get('VLLM_VK_MLP_LAYERS', '24'))):
+            return self._vulkan_mlp(x)
         gate_up, _ = self.gate_up_proj(x)
         out = self.act_fn(gate_up)
         out, _ = self.down_proj(out)
+
+        if self.expert_gate is not None:
+            out = F.sigmoid(self.expert_gate(x)[0]) * out
+
+        return out
+
+    def _vulkan_mlp(self, x):
+        """GPU MLP: matmuls on Vulkan. Splits gate_up if > 16000 rows."""
+        dt = x.dtype
+        if not hasattr(self, '_vk_initialized'):
+            Qwen2MoeMLP._vk_count += 1
+            w = self.gate_up_proj.weight.data.cpu().float()
+            half = w.shape[0] // 2
+            if w.shape[0] > 16000:
+                # Split: gate and up separately (avoids Vulkan image row limit)
+                self._vk_gate_w = w[:half].to('vulkan')
+                self._vk_up_w = w[half:].to('vulkan')
+                self._vk_split = True
+            else:
+                # Single combined matmul
+                self._vguw = w.to('vulkan')
+                self._vk_split = False
+            self._vdw = self.down_proj.weight.data.cpu().float().to('vulkan')
+            self._vk_initialized = True
+
+        xv = x.cpu().float().contiguous().to('vulkan')
+
+        if self._vk_split:
+            gate = torch.mm(xv, self._vk_gate_w.t())
+            up = torch.mm(xv, self._vk_up_w.t())
+        else:
+            gu = torch.mm(xv, self._vguw.t())
+            d = gu.shape[-1] // 2
+            gate, up = gu[..., :d], gu[..., d:]
+
+        # SiluAndMul on Vulkan
+        ea = torch.exp(gate)
+        act = (gate * (ea / (ea + 1.0))) * up
+        out = torch.mm(act, self._vdw.t()).cpu().to(dt)
 
         if self.expert_gate is not None:
             out = F.sigmoid(self.expert_gate(x)[0]) * out

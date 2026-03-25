@@ -27,6 +27,7 @@
 from collections.abc import Iterable
 from itertools import islice
 
+import os
 import torch
 from torch import nn
 from transformers import LlamaConfig
@@ -113,11 +114,49 @@ class LlamaMLP(nn.Module):
             )
         self.act_fn = SiluAndMul()
 
+    _vk_count = 0
     def forward(self, x):
+        if (os.environ.get('VLLM_PLATFORM') == 'vulkan'
+                and torch.is_vulkan_available()
+                and LlamaMLP._vk_count < int(os.environ.get('VLLM_VK_MLP_LAYERS', '24'))):
+            return self._vulkan_mlp(x)
         x, _ = self.gate_up_proj(x)
         x = self.act_fn(x)
         x, _ = self.down_proj(x)
         return x
+
+    def _vulkan_mlp(self, x):
+        """GPU MLP with split gate_up for large models (>16K rows)."""
+        dt = x.dtype
+        if not hasattr(self, '_vk_gate_w'):
+            LlamaMLP._vk_count += 1
+            w = self.gate_up_proj.weight.data.cpu().float()
+            half = w.shape[0] // 2
+            # Split gate_up into gate and up (each under 16K row limit)
+            if half > 16000:
+                import sys
+                print(f"[VK-LlamaMLP] Weight {w.shape} too large even split, falling back", file=sys.stderr)
+                self._vk_failed = True
+                x, _ = self.gate_up_proj(x)
+                x = self.act_fn(x)
+                x, _ = self.down_proj(x)
+                return x
+            self._vk_gate_w = w[:half].to('vulkan')
+            self._vk_up_w = w[half:].to('vulkan')
+            self._vk_down_w = self.down_proj.weight.data.cpu().float().to('vulkan')
+        if hasattr(self, '_vk_failed'):
+            x, _ = self.gate_up_proj(x)
+            x = self.act_fn(x)
+            x, _ = self.down_proj(x)
+            return x
+        xv = x.cpu().float().contiguous().to('vulkan')
+        # Split matmul: gate and up separately (avoids 20K row limit)
+        gate = torch.mm(xv, self._vk_gate_w.t())
+        up = torch.mm(xv, self._vk_up_w.t())
+        # SiluAndMul on Vulkan
+        ea = torch.exp(gate)
+        act = (gate * (ea / (ea + 1.0))) * up
+        return torch.mm(act, self._vk_down_w.t()).cpu().to(dt)
 
 
 class LlamaAttention(nn.Module):

@@ -94,13 +94,19 @@ def initialize_model(
 def process_weights_after_loading(
     model: nn.Module, model_config: ModelConfig, target_device: torch.device
 ) -> None:
-    # ✅ FULL GPU RESIDENCY - Everything on Vulkan!
-    # No CPU offloading - eliminates ping-pong latency
+    # VULKAN SELECTIVE GPU OFFLOAD
+    # When VLLM_VK_MLP_LAYERS is set, the model's forward() handles which
+    # MLP layers go to Vulkan (via _vulkan_mlp). We do NOT bulk-move the
+    # entire model to Vulkan here -- that would OOM on 2.6GB device memory
+    # for any model larger than 0.5B.  Weights stay on CPU; only the layers
+    # selected by VLLM_VK_MLP_LAYERS are moved lazily during forward().
     if target_device.type == 'vulkan':
-        print("🚀 VULKAN FULL GPU RESIDENCY: All layers on Vulkan - Zero CPU offloading!")
-        # Let PyTorch handle device placement normally
-        # The target_device is already 'vulkan', so model.to(target_device) will work
-        # We just need to ensure no modules are explicitly moved to CPU
+        import os
+        vk_mlp = os.environ.get('VLLM_VK_MLP_LAYERS')
+        if vk_mlp is not None:
+            print(f"VULKAN SELECTIVE OFFLOAD: MLP layers 0..{vk_mlp} will be offloaded to Vulkan during forward(). Model stays on CPU.")
+        else:
+            print("VULKAN: Model weights on CPU. MLP offload controlled by model forward() (default: all layers).")
 
     
     for _, module in model.named_modules():
@@ -143,19 +149,17 @@ def device_loading_context(module: torch.nn.Module, target_device: torch.device)
     uva_offloaded_parameters: list[str] = []
 
     if target_device.type == 'vulkan':
-        # VULKAN ASAHI FIX: Keep on CPU, don't try to move to Vulkan
-        # Vulkan device memory is too limited on Asahi
+        # VULKAN ASAHI: Do NOT move module params to Vulkan here.
+        # Vulkan device memory is limited (~2.6GB on M1 Max).
+        # The model's _vulkan_mlp() handles selective GPU offload
+        # during forward(), controlled by VLLM_VK_MLP_LAYERS.
         pass
     else:
         # Standard vLLM path for other devices
         for name, p in module.named_parameters():
             if p.device.type == "cpu":
                 original_device_states[name] = p.device
-                if target_device.type == 'vulkan':
-                    module.to('vulkan')
-                    break
-                else:
-                    p.data = p.data.to(target_device)
+                p.data = p.data.to(target_device)
             if getattr(p, "_vllm_is_uva_offloaded", False):
                 uva_offloaded_parameters.append(name)
         # Parameters already on target device are not touched
