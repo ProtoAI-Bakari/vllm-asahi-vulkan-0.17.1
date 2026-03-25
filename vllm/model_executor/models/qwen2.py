@@ -107,7 +107,7 @@ class Qwen2MLP(nn.Module):
 
     _vk_count = 0
     def forward(self, x):
-        if (x.shape[0] > 8 and os.environ.get('VLLM_PLATFORM') == 'vulkan'
+        if (x.shape[0] > 0 and os.environ.get('VLLM_PLATFORM') == 'vulkan'
                 and torch.is_vulkan_available()
                 and Qwen2MLP._vk_count < 24):
             return self._vulkan_mlp(x)
