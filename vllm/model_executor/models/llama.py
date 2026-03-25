@@ -28,7 +28,27 @@ from collections.abc import Iterable
 from itertools import islice
 
 import os
+import sys
 import torch
+import numpy as np
+
+# ggml fused MLP layer engine (shared across all layers)
+_ggml_layer_engine = None
+_ggml_layer_lib = None
+def _get_ggml_layer_engine():
+    global _ggml_layer_engine, _ggml_layer_lib
+    if _ggml_layer_engine is None and os.environ.get('VLLM_USE_GGML') == '1':
+        import ctypes
+        _ggml_layer_lib = ctypes.CDLL(os.path.expanduser('~/AGENT/libggml_mlp_layer.so'))
+        _ggml_layer_lib.mlp_layer_init.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        _ggml_layer_lib.mlp_layer_init.restype = ctypes.c_void_p
+        _ggml_layer_lib.mlp_layer_load.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        _ggml_layer_lib.mlp_layer_load.restype = ctypes.c_int
+        _ggml_layer_lib.mlp_layer_forward.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+        _ggml_layer_lib.mlp_layer_forward.restype = ctypes.c_int
+        _ggml_layer_lib.mlp_layer_free.argtypes = [ctypes.c_void_p]
+        print("[GGML-FUSED] Initializing fused MLP layer engine", file=sys.stderr)
+    return _ggml_layer_lib
 from torch import nn
 from transformers import LlamaConfig
 
@@ -128,14 +148,56 @@ class LlamaMLP(nn.Module):
         return x
 
     def _vulkan_mlp(self, x):
-        """GPU MLP: Vulkan for prefill (batch>threshold), CPU for decode."""
+        """GPU MLP: ggml fused Vulkan (if VLLM_USE_GGML=1) or PyTorch Vulkan fallback."""
         dt = x.dtype
+
+        # ggml fused path: gate+up+silu+mul+down in ONE Vulkan dispatch
+        ggml_lib = _get_ggml_layer_engine()
+        if ggml_lib is not None:
+            import ctypes
+            global _ggml_layer_engine
+            if not hasattr(self, '_ggml_fused_initialized'):
+                LlamaMLP._vk_count += 1
+                layer_id = LlamaMLP._vk_count - 1  # 0-indexed for C
+                w = self.gate_up_proj.weight.data.cpu().float().numpy()
+                half = w.shape[0] // 2
+                gate_w = np.ascontiguousarray(w[:half])
+                up_w = np.ascontiguousarray(w[half:])
+                down_w = np.ascontiguousarray(self.down_proj.weight.data.cpu().float().numpy())
+                K = gate_w.shape[1]  # hidden_dim
+                N = gate_w.shape[0]  # intermediate
+                # Init engine on first layer
+                if _ggml_layer_engine is None:
+                    n_layers = int(os.environ.get('VLLM_VK_MLP_LAYERS', '32'))
+                    _ggml_layer_engine = ggml_lib.mlp_layer_init(n_layers, K, N)
+                    print(f"[GGML-FUSED] Engine created: {n_layers} layers, {K}x{N}", file=sys.stderr)
+                ret = ggml_lib.mlp_layer_load(_ggml_layer_engine, layer_id,
+                    gate_w.ctypes.data, up_w.ctypes.data, down_w.ctypes.data)
+                if ret != 0:
+                    print(f"[GGML-FUSED] FAILED to load layer {layer_id}, falling back", file=sys.stderr)
+                    self._ggml_fused_failed = True
+                else:
+                    self._ggml_layer_id = layer_id
+                    self._ggml_fused_initialized = True
+                    print(f"[GGML-FUSED] Layer {layer_id} loaded on Vulkan", file=sys.stderr)
+
+            if hasattr(self, '_ggml_fused_initialized') and not hasattr(self, '_ggml_fused_failed'):
+                lid = self._ggml_layer_id
+                M = x.shape[0]
+                x_np = np.ascontiguousarray(x.cpu().float().numpy())
+                out_np = np.empty((M, x_np.shape[1]), dtype=np.float32)
+                ret = ggml_lib.mlp_layer_forward(_ggml_layer_engine, lid, M,
+                    x_np.ctypes.data, out_np.ctypes.data)
+                if ret == 0:
+                    return torch.from_numpy(out_np).to(dt).to(x.device)
+                # Fall through to PyTorch Vulkan on failure
+
+        # Fallback: PyTorch Vulkan path (original)
         if not hasattr(self, '_vk_initialized'):
             LlamaMLP._vk_count += 1
             w = self.gate_up_proj.weight.data.cpu().float()
             half = w.shape[0] // 2
             if half > 16000:
-                import sys
                 print(f"[VK-LlamaMLP] Weight {w.shape} too large even split, falling back", file=sys.stderr)
                 self._vk_failed = True
                 return self._cpu_forward(x)
@@ -149,14 +211,12 @@ class LlamaMLP(nn.Module):
         if hasattr(self, '_vk_failed'):
             return self._cpu_forward(x)
 
-        # Decode: CPU is faster at batch=1
         if x.shape[0] <= LlamaMLP._vk_batch_threshold:
             gu = torch.nn.functional.linear(x.cpu().to(self._cpu_gate_up_w.dtype), self._cpu_gate_up_w)
             d = gu.shape[-1] // 2
             act = torch.nn.functional.silu(gu[..., :d]) * gu[..., d:]
             return torch.nn.functional.linear(act, self._cpu_down_w).to(dt)
 
-        # Prefill: Vulkan GPU
         xv = x.cpu().float().contiguous().to('vulkan')
         gate = torch.mm(xv, self._vk_gate_w.t()).cpu()
         up = torch.mm(xv, self._vk_up_w.t()).cpu()

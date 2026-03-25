@@ -61,7 +61,8 @@ inline int64_t get_available_l2_size() {
     long cache_res = sysconf(_SC_LEVEL2_CACHE_SIZE);
     const uint32_t l2_cache_size = (cache_res > 0) ? (uint32_t)cache_res : 4194304;
     #else
-    const uint32_t l2_cache_size = at::cpu::L2_cache_size();
+#include <unistd.h>
+    const uint32_t l2_cache_size = (sysconf(_SC_LEVEL2_CACHE_SIZE) > 0 ? sysconf(_SC_LEVEL2_CACHE_SIZE) : 4194304);
     #endif
     return l2_cache_size >> 1;  // use 50% of L2 cache
   }();
