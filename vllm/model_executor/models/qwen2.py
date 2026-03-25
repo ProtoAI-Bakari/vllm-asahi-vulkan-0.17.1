@@ -248,39 +248,61 @@ class Qwen2Attention(nn.Module):
             else {},
         )
 
+    _vk_attn_count = 0
+    _vk_attn_max = int(os.environ.get('VLLM_VK_ATTN_LAYERS', '100'))
+
+    def _init_vulkan_attn(self):
+        """Cache QKV and O projection weights for Vulkan/CPU fast path."""
+        Qwen2Attention._vk_attn_count += 1
+        self._cpu_qkv_w = self.qkv_proj.weight.data.cpu()
+        self._cpu_qkv_b = self.qkv_proj.bias.data.cpu() if self.qkv_proj.bias is not None else None
+        self._cpu_o_w = self.o_proj.weight.data.cpu()
+        self._vk_attn_initialized = True
+
     def forward(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
-        # Vulkan-compatible split using slicing (as_strided not supported on Vulkan)
-        if os.environ.get('VLLM_PLATFORM') == 'vulkan':
+        is_vulkan = os.environ.get('VLLM_PLATFORM') == 'vulkan'
+
+        # Vulkan fast path: bypass vLLM linear dispatch, use cached weights
+        if is_vulkan and Qwen2Attention._vk_attn_count < Qwen2Attention._vk_attn_max:
+            if not hasattr(self, '_vk_attn_initialized'):
+                self._init_vulkan_attn()
+            dt = hidden_states.dtype
+            x = hidden_states.cpu().to(self._cpu_qkv_w.dtype)
+            qkv = torch.nn.functional.linear(x, self._cpu_qkv_w, self._cpu_qkv_b).to(dt)
+        else:
+            qkv, _ = self.qkv_proj(hidden_states)
+
+        # Split QKV
+        if is_vulkan:
             q = qkv[..., :self.q_size]
             k = qkv[..., self.q_size:self.q_size + self.kv_size]
             v = qkv[..., self.q_size + self.kv_size:self.q_size + 2 * self.kv_size]
         else:
             q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
-        # Apply QK normalization if enabled (before RoPE)
         if self.qk_norm:
-            # Reshape to apply per-head normalization
-            # q shape: (total_tokens, q_size) -> (total_tokens, num_heads, head_dim)
             total_tokens = q.shape[0]
             q = q.view(total_tokens, self.num_heads, self.head_dim)
             k = k.view(total_tokens, self.num_kv_heads, self.head_dim)
-
-            # Apply normalization
             q = self.q_norm(q)
             k = self.k_norm(k)
-
-            # Reshape back
             q = q.view(total_tokens, self.q_size)
             k = k.view(total_tokens, self.kv_size)
 
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
-        output, _ = self.o_proj(attn_output)
+
+        # Vulkan fast path for output projection
+        if is_vulkan and hasattr(self, '_vk_attn_initialized'):
+            output = torch.nn.functional.linear(
+                attn_output.cpu().to(self._cpu_o_w.dtype), self._cpu_o_w
+            ).to(hidden_states.dtype)
+        else:
+            output, _ = self.o_proj(attn_output)
         return output
 
 
