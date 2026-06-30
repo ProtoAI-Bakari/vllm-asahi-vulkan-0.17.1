@@ -12,7 +12,7 @@ echo "🚀 INITIATING vLLM $TAG NATIVE VULKAN DEPLOYMENT"
 
 # 1. System Prep
 sudo dnf install -y gcc-c++ cmake ninja-build rust cargo python3-devel \
-                 vulkan-loader-devel mesa-vulkan-devel shaderc-devel libgomp
+                 vulkan-loader-devel mesa-vulkan-drivers mesa-vulkan-drivers-debuginfo libshaderc-devel libgomp
 sudo ln -sf /usr/lib64/libgomp.so.1 /usr/lib64/libgomp.so
 
 # 2. Workspace Prep
